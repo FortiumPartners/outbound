@@ -1,0 +1,72 @@
+# Render Blueprint - Fortium Outbound
+# https://render.com/docs/blueprint-spec
+
+services:
+  # Backend API
+  - type: web
+    name: outbound-api
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    repo: https://github.com/FortiumPartners/outbound
+    branch: main
+    healthCheckPath: /health
+    plan: starter  # $7/mo - can upgrade later
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 8000
+      - key: HOST
+        value: 0.0.0.0
+      - key: LOG_LEVEL
+        value: info
+      - key: DATABASE_URL
+        sync: false  # Set to Supabase pooler URL
+      - key: HUBSPOT_ACCESS_TOKEN
+        sync: false
+
+  # Frontend static site
+  - type: web
+    name: outbound-frontend
+    runtime: static
+    buildCommand: cd frontend && npm install && npm run build
+    staticPublishPath: ./frontend/dist
+    repo: https://github.com/FortiumPartners/outbound
+    branch: main
+    plan: starter
+    headers:
+      - path: /*
+        name: Cache-Control
+        value: no-cache
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    envVars:
+      - key: VITE_API_URL
+        sync: false  # Set to https://outbound-api.onrender.com
+
+  # Lead5 Scout - runs daily at 6am ET (11:00 UTC)
+  - type: cron
+    name: lead5-scout
+    runtime: docker
+    dockerfilePath: ./scouts/lead5-scout/Dockerfile
+    dockerContext: ./scouts/lead5-scout
+    repo: https://github.com/FortiumPartners/outbound
+    branch: main
+    schedule: "0 11 * * *"  # 6am ET = 11:00 UTC
+    plan: starter
+    envVars:
+      - key: LEAD5_EMAIL
+        sync: false
+      - key: LEAD5_PASSWORD
+        sync: false
+      - key: OUTBOUND_API_URL
+        value: https://outbound-api.onrender.com
+      - key: DRY_RUN
+        value: "false"
+      - key: MAX_RESULTS
+        value: "50"
+      - key: RATE_LIMIT_MS
+        value: "2000"

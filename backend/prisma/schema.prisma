@@ -1,0 +1,265 @@
+// Fortium Outbound - vBDR System Schema
+// Universe, Signals, Hypotheses, Plays, Scoreboard
+
+generator client {
+  provider      = "prisma-client-js"
+  // Required for Alpine Linux (Docker) - fixes OpenSSL compatibility
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// =============================================================================
+// UNIVERSE - Target accounts and contacts
+// =============================================================================
+
+model Account {
+  id            String   @id @default(uuid())
+  name          String
+  domain        String?  @unique
+  linkedinUrl   String?  @map("linkedin_url")
+  industry      String?
+  employeeCount Int?     @map("employee_count")
+  revenue       String?
+
+  // Dedupe and identity resolution
+  dedupeKey     String?  @unique @map("dedupe_key")
+
+  // Metadata
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  contacts      Contact[]
+  signals       Signal[]
+  hypotheses    Hypothesis[]
+  segments      AccountSegment[]
+
+  @@map("accounts")
+}
+
+model Contact {
+  id            String   @id @default(uuid())
+  accountId     String?  @map("account_id")
+
+  // Identity
+  firstName     String?  @map("first_name")
+  lastName      String?  @map("last_name")
+  email         String?  @unique
+  linkedinUrl   String?  @map("linkedin_url")
+  title         String?
+
+  // Dedupe and identity resolution
+  dedupeKey     String?  @unique @map("dedupe_key")
+
+  // Metadata
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  account       Account? @relation(fields: [accountId], references: [id], onDelete: SetNull)
+  signals       Signal[]
+  hypotheses    Hypothesis[]
+  segments      ContactSegment[]
+
+  @@map("contacts")
+}
+
+model Segment {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  description String?
+  type        String   @default("custom") // pe, portfolio, existing_client, past_client, net_new, custom
+
+  // Compliance rules
+  rules       Json?    // Per-segment rules (e.g., approval requirements)
+
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  accounts    AccountSegment[]
+  contacts    ContactSegment[]
+
+  @@map("segments")
+}
+
+model AccountSegment {
+  id        String   @id @default(uuid())
+  accountId String   @map("account_id")
+  segmentId String   @map("segment_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  account   Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  segment   Segment  @relation(fields: [segmentId], references: [id], onDelete: Cascade)
+
+  @@unique([accountId, segmentId])
+  @@map("account_segments")
+}
+
+model ContactSegment {
+  id        String   @id @default(uuid())
+  contactId String   @map("contact_id")
+  segmentId String   @map("segment_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  contact   Contact  @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  segment   Segment  @relation(fields: [segmentId], references: [id], onDelete: Cascade)
+
+  @@unique([contactId, segmentId])
+  @@map("contact_segments")
+}
+
+// =============================================================================
+// SIGNALS - Event detection and intelligence
+// =============================================================================
+
+model Signal {
+  id              String   @id @default(uuid())
+  accountId       String?  @map("account_id")
+  contactId       String?  @map("contact_id")
+
+  // Signal classification
+  type            String   // job_change, funding, news, social_activity, intent, etc.
+  severity        String   @default("medium") // low, medium, high, critical
+  confidence      Float    @default(0.5)
+
+  // Source tracking (audit trail)
+  source          String   // linkedin, news_api, manual, crm_sync, etc.
+  sourceId        String?  @map("source_id") // External ID for deduplication
+  sourceUrl       String?  @map("source_url")
+
+  // Content
+  rawPayload      Json?    @map("raw_payload")
+  summary         String?
+
+  // Processing state
+  processedAt     DateTime? @map("processed_at")
+  hypothesisCount Int      @default(0) @map("hypothesis_count")
+
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  account         Account? @relation(fields: [accountId], references: [id], onDelete: SetNull)
+  contact         Contact? @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  hypotheses      Hypothesis[]
+
+  @@unique([source, sourceId])
+  @@map("signals")
+}
+
+// =============================================================================
+// HYPOTHESES - Conversation starters and action recommendations
+// =============================================================================
+
+model Hypothesis {
+  id                   String   @id @default(uuid())
+  signalId             String?  @map("signal_id")
+  accountId            String?  @map("account_id")
+  contactId            String?  @map("contact_id")
+
+  // Hypothesis content
+  title                String
+  summary              String?
+  conversationOpener   String?  @map("conversation_opener")
+
+  // Classification
+  noveltyTag           String?  @map("novelty_tag") // high, medium, low - how unique/timely
+  complianceRisk       String   @default("low") @map("compliance_risk") // low, medium, high
+
+  // Routing
+  recommendedMessenger String?  @map("recommended_messenger") // Who should reach out
+  channel              String?  // email, linkedin, phone, in_person
+
+  // Generation tracking (for non-deterministic outputs)
+  generationMethod     String   @default("manual") @map("generation_method") // manual, ai_generated, rule_based
+  generationModelId    String?  @map("generation_model_id")
+  generationPromptHash String?  @map("generation_prompt_hash")
+
+  // Approval workflow
+  status               String   @default("draft") // draft, pending_review, approved, rejected, executed
+  approvedBy           String?  @map("approved_by")
+  approvedAt           DateTime? @map("approved_at")
+  rejectionReason      String?  @map("rejection_reason")
+
+  // Metrics
+  score                Float?   // Predicted success score
+
+  createdAt            DateTime @default(now()) @map("created_at")
+  updatedAt            DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  signal               Signal?  @relation(fields: [signalId], references: [id], onDelete: SetNull)
+  account              Account? @relation(fields: [accountId], references: [id], onDelete: SetNull)
+  contact              Contact? @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  plays                Play[]
+
+  @@map("hypotheses")
+}
+
+// =============================================================================
+// PLAYS - Executed actions and outcomes
+// =============================================================================
+
+model Play {
+  id           String   @id @default(uuid())
+  hypothesisId String?  @map("hypothesis_id")
+
+  // Action details
+  type         String   // email_sent, linkedin_message, call_made, meeting_booked, gift_sent
+  channel      String?
+  executor     String?  // Who executed the play
+
+  // Content (for audit trail)
+  contentHash  String?  @map("content_hash") // Hash of actual content sent
+
+  // Compliance
+  requiresApproval Boolean  @default(false) @map("requires_approval")
+  approvedBy       String?  @map("approved_by")
+  approvedAt       DateTime? @map("approved_at")
+
+  // Outcome tracking
+  status       String   @default("pending") // pending, sent, delivered, opened, replied, converted, bounced
+  outcome      String?  // positive, negative, neutral, no_response
+  outcomeNotes String?  @map("outcome_notes")
+
+  // Timestamps
+  scheduledFor DateTime? @map("scheduled_for")
+  executedAt   DateTime? @map("executed_at")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  hypothesis   Hypothesis? @relation(fields: [hypothesisId], references: [id], onDelete: SetNull)
+
+  @@map("plays")
+}
+
+// =============================================================================
+// AUDIT LOG - Full traceability
+// =============================================================================
+
+model AuditLog {
+  id          String   @id @default(uuid())
+
+  // What changed
+  entityType  String   @map("entity_type") // account, contact, signal, hypothesis, play
+  entityId    String   @map("entity_id")
+  action      String   // created, updated, deleted, approved, rejected, executed
+
+  // Who/what made the change
+  actorType   String   @map("actor_type") // user, system, api
+  actorId     String?  @map("actor_id")
+
+  // Change details
+  changes     Json?
+  reason      String?
+
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([entityType, entityId])
+  @@map("audit_logs")
+}
