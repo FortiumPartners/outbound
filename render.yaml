@@ -63,7 +63,7 @@ services:
       - key: LEAD5_PASSWORD
         sync: false
       - key: OUTBOUND_API_URL
-        value: https://outbound-api.onrender.com
+        value: https://outbound-ikby.onrender.com
       - key: DRY_RUN
         value: "false"
       - key: MAX_RESULTS
