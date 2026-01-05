@@ -1,25 +1,6 @@
 # Lead5 Scout - TypeScript Agent for finding executive job postings
-FROM node:20-slim
-
-# Install system dependencies for Playwright
-RUN apt-get update && apt-get install -y \
-    # Playwright Chromium dependencies
-    libnss3 \
-    libnspr4 \
-    libatk1.0-0 \
-    libatk-bridge2.0-0 \
-    libcups2 \
-    libdrm2 \
-    libxkbcommon0 \
-    libxcomposite1 \
-    libxdamage1 \
-    libxfixes3 \
-    libxrandr2 \
-    libgbm1 \
-    libasound2 \
-    libpango-1.0-0 \
-    libcairo2 \
-    && rm -rf /var/lib/apt/lists/*
+# Using bookworm (not slim) for better Playwright compatibility
+FROM node:20-bookworm
 
 # Set working directory
 WORKDIR /app
@@ -30,8 +11,9 @@ COPY package.json package-lock.json* ./
 # Install dependencies
 RUN npm install
 
-# Install Playwright browsers
-RUN npx playwright install chromium
+# Install Playwright with all system dependencies
+# --with-deps installs browser + all required system libraries
+RUN npx playwright install --with-deps chromium
 
 # Copy TypeScript config and source
 COPY tsconfig.json ./

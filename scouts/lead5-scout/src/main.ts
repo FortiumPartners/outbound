@@ -309,7 +309,12 @@ async function main(): Promise<void> {
     console.log('Launching browser...');
     browser = await chromium.launch({
       headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',  // Prevents crashes in Docker containers
+        '--disable-gpu',
+      ],
     });
 
     const context = await browser.newContext({
