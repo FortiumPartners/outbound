@@ -253,13 +253,73 @@ function ContactsPage() {
 }
 
 function SignalsPage() {
+  const { data, isLoading } = useQuery({
+    queryKey: ['signals'],
+    queryFn: async () => {
+      const res = await fetch(`${API_URL}/api/v1/signals?limit=50`);
+      if (!res.ok) throw new Error('Failed to fetch');
+      return res.json();
+    },
+  });
+
   return (
     <div>
       <h2 className="text-2xl font-bold mb-6">Signals</h2>
-      <div className="rounded-lg border bg-card p-8 text-center">
-        <Zap className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
-        <p className="text-muted-foreground">Signal detection coming soon</p>
-      </div>
+      {isLoading ? (
+        <p className="text-muted-foreground">Loading...</p>
+      ) : data?.data?.length === 0 ? (
+        <div className="rounded-lg border bg-card p-8 text-center">
+          <Zap className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
+          <p className="text-muted-foreground">No signals detected yet</p>
+        </div>
+      ) : (
+        <div className="grid gap-4">
+          {data?.data?.map((signal: {
+            id: string;
+            type: string;
+            source: string;
+            severity: string;
+            summary: string;
+            rawPayload: { companyName?: string; metro?: string; postedDate?: string; description?: string };
+            createdAt: string
+          }) => (
+            <div key={signal.id} className="rounded-lg border bg-card p-4">
+              <div className="flex items-start justify-between mb-2">
+                <div className="flex items-center gap-2">
+                  <span className={`px-2 py-0.5 rounded text-xs font-medium ${
+                    signal.severity === 'high' ? 'bg-red-100 text-red-700' :
+                    signal.severity === 'medium' ? 'bg-yellow-100 text-yellow-700' :
+                    'bg-gray-100 text-gray-700'
+                  }`}>
+                    {signal.severity}
+                  </span>
+                  <span className="px-2 py-0.5 rounded text-xs bg-blue-100 text-blue-700">
+                    {signal.type}
+                  </span>
+                  <span className="text-xs text-muted-foreground">
+                    via {signal.source}
+                  </span>
+                </div>
+                <span className="text-xs text-muted-foreground">
+                  {new Date(signal.createdAt).toLocaleString()}
+                </span>
+              </div>
+              <h3 className="font-semibold mb-1">{signal.summary}</h3>
+              {signal.rawPayload?.metro && (
+                <p className="text-sm text-muted-foreground mb-2">
+                  📍 {signal.rawPayload.metro}
+                  {signal.rawPayload?.postedDate && ` • Posted: ${signal.rawPayload.postedDate}`}
+                </p>
+              )}
+              {signal.rawPayload?.description && (
+                <p className="text-sm text-muted-foreground line-clamp-2">
+                  {signal.rawPayload.description}
+                </p>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
