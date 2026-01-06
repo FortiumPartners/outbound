@@ -198,9 +198,11 @@ async function extractOpportunities(page: Page, maxResults: number): Promise<Opp
     // Skip navigation links
     if (data.title.length < 10 || data.title.includes('Menu')) continue;
 
-    // Extract ID from href
+    // Extract ID from href, or create stable ID from title
     const idMatch = data.href.match(/ArticleDetails\/(\d+)/);
-    const id = idMatch ? idMatch[1] : `lead5-${Date.now()}-${i}`;
+    // Use article ID if available, otherwise create stable slug from title
+    const slugify = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '').slice(0, 50);
+    const id = idMatch ? idMatch[1] : slugify(data.title);
 
     // Extract company from title
     const atMatch = data.title.match(/at\s+(.+?)(?:\s*$)/i);
@@ -291,6 +293,8 @@ async function main(): Promise<void> {
   try {
     config = loadConfig();
     console.log(`Config loaded: dryRun=${config.dryRun}, maxResults=${config.maxResults}`);
+    console.log(`API URL: ${config.outboundApiUrl}`);
+    console.log(`Lead5 Email: ${config.lead5Email ? 'set' : 'MISSING'}`);
   } catch (error) {
     console.error('Failed to load config:', error);
     process.exit(1);
@@ -302,6 +306,19 @@ async function main(): Promise<void> {
     apiKey: config.outboundApiKey,
     dryRun: config.dryRun,
   });
+
+  // Test API connectivity FIRST before doing anything else
+  console.log('Testing API connectivity...');
+  try {
+    const healthResp = await fetch(`${config.outboundApiUrl}/health`);
+    console.log(`Health check: ${healthResp.status}`);
+    if (!healthResp.ok) {
+      throw new Error(`API health check failed: ${healthResp.status}`);
+    }
+  } catch (error) {
+    console.error('API connectivity failed:', error);
+    // Continue anyway - we want to try
+  }
 
   // Report start (for debugging on Render)
   await outboundClient.reportStatus('starting', {
