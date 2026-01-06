@@ -73,6 +73,34 @@ export class OutboundClient {
   }
 
   /**
+   * Report scout status (for debugging on Render where logs don't show).
+   */
+  async reportStatus(status: string, details?: Record<string, unknown>): Promise<void> {
+    const signalData = {
+      type: 'scout_status',
+      source: 'lead5-scout',
+      sourceId: `lead5-scout:status:${Date.now()}`,
+      severity: status.includes('error') ? 'high' : 'low',
+      confidence: 1.0,
+      summary: `Scout: ${status}`,
+      rawPayload: {
+        status,
+        timestamp: new Date().toISOString(),
+        ...details,
+      },
+    };
+
+    try {
+      await this.fetch('/api/v1/signals', {
+        method: 'POST',
+        body: JSON.stringify(signalData),
+      });
+    } catch {
+      // Ignore errors - this is just for debugging
+    }
+  }
+
+  /**
    * Create a new signal in Outbound.
    */
   async createSignal(payload: SignalPayload): Promise<Signal | null> {

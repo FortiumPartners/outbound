@@ -303,10 +303,19 @@ async function main(): Promise<void> {
     dryRun: config.dryRun,
   });
 
+  // Report start (for debugging on Render)
+  await outboundClient.reportStatus('starting', {
+    dryRun: config.dryRun,
+    maxResults: config.maxResults,
+    apiUrl: config.outboundApiUrl,
+  });
+
   // Launch browser
   let browser: Browser | null = null;
   try {
     console.log('Launching browser...');
+    await outboundClient.reportStatus('launching_browser');
+
     browser = await chromium.launch({
       headless: true,
       args: [
@@ -314,8 +323,11 @@ async function main(): Promise<void> {
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',  // Prevents crashes in Docker containers
         '--disable-gpu',
+        '--single-process',  // More stable in containers
       ],
     });
+
+    await outboundClient.reportStatus('browser_launched');
 
     const context = await browser.newContext({
       userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
@@ -324,17 +336,23 @@ async function main(): Promise<void> {
     const page = await context.newPage();
 
     // Login
+    await outboundClient.reportStatus('logging_in');
     const loggedIn = await login(page, config);
     if (!loggedIn) {
+      await outboundClient.reportStatus('error:login_failed');
       throw new Error('Failed to login to Lead5');
     }
+    await outboundClient.reportStatus('login_successful');
 
     // Navigate to search
+    await outboundClient.reportStatus('navigating_to_search');
     await navigateToSearch(page);
 
     // Extract opportunities
+    await outboundClient.reportStatus('extracting_opportunities');
     const opportunities = await extractOpportunities(page, config.maxResults);
     console.log(`Extracted ${opportunities.length} opportunities`);
+    await outboundClient.reportStatus('extraction_complete', { count: opportunities.length });
 
     if (opportunities.length === 0) {
       console.log('No opportunities found. The page structure may have changed.');
@@ -343,6 +361,7 @@ async function main(): Promise<void> {
     }
 
     // Process opportunities
+    await outboundClient.reportStatus('processing_opportunities');
     const stats = await processOpportunities(opportunities, outboundClient, config.rateLimitMs);
 
     console.log('\n=== Scout Run Complete ===');
@@ -351,8 +370,27 @@ async function main(): Promise<void> {
     console.log(`Failed: ${stats.failed}`);
     console.log(`Total processed: ${opportunities.length}`);
 
+    await outboundClient.reportStatus('completed', {
+      created: stats.created,
+      skipped: stats.skipped,
+      failed: stats.failed,
+      total: opportunities.length,
+    });
+
   } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
     console.error('Scout error:', error);
+
+    // Try to report the error
+    try {
+      await outboundClient.reportStatus('error:exception', {
+        error: errorMessage,
+        stack: error instanceof Error ? error.stack : undefined,
+      });
+    } catch {
+      // Ignore if we can't report
+    }
+
     process.exit(1);
   } finally {
     if (browser) {
