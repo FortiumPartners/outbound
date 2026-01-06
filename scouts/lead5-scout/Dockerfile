@@ -1,6 +1,6 @@
 # Lead5 Scout - TypeScript Agent for finding executive job postings
-# Using bookworm (not slim) for better Playwright compatibility
-FROM node:20-bookworm
+# Using official Playwright Docker image for guaranteed compatibility
+FROM mcr.microsoft.com/playwright:v1.49.1-noble
 
 # Set working directory
 WORKDIR /app
@@ -8,12 +8,8 @@ WORKDIR /app
 # Copy package files first for better caching
 COPY package.json package-lock.json* ./
 
-# Install dependencies
+# Install dependencies (Playwright already installed in base image)
 RUN npm install
-
-# Install Playwright with all system dependencies
-# --with-deps installs browser + all required system libraries
-RUN npx playwright install --with-deps chromium
 
 # Copy TypeScript config and source
 COPY tsconfig.json ./
