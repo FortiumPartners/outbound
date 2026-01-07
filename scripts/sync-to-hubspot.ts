@@ -59,13 +59,31 @@ async function markSignalProcessed(signalId: string): Promise<void> {
   }
 }
 
+// Default owner for new deals from Lead5 (Richard Harris - handles most BD)
+const DEFAULT_HUBSPOT_OWNER_ID = process.env.HUBSPOT_DEFAULT_OWNER_ID || '10675373';
+
+function detectPractice(jobTitle: string): 'CIO' | 'CTO' | 'CISO' | null {
+  const title = jobTitle.toLowerCase();
+  if (title.includes('ciso') || title.includes('security officer')) return 'CISO';
+  if (title.includes('cto') || title.includes('technology officer')) return 'CTO';
+  if (title.includes('cio') || title.includes('information officer')) return 'CIO';
+  return null;
+}
+
 async function createHubSpotDeal(signal: Signal): Promise<HubSpotDeal | null> {
   const { companyName, jobTitle, metro, postedDate, description } = signal.rawPayload;
 
-  // Build deal name
-  const dealName = `${companyName} - ${jobTitle.replace(/vacancy at .+/i, '').replace(/at .+/i, '').trim()}`;
+  // Build deal name - clean up the title
+  const cleanTitle = jobTitle
+    .replace(/vacancy at .+/i, '')
+    .replace(/at .+/i, '')
+    .trim();
+  const dealName = `${companyName} - ${cleanTitle || 'Executive Opportunity'}`;
 
-  // Create deal in HubSpot
+  // Detect practice area from job title
+  const practice = detectPractice(jobTitle);
+
+  // Create deal in HubSpot with all required fields
   const response = await fetch('https://api.hubapi.com/crm/v3/objects/deals', {
     method: 'POST',
     headers: {
@@ -77,6 +95,12 @@ async function createHubSpotDeal(signal: Signal): Promise<HubSpotDeal | null> {
         dealname: dealName,
         dealstage: 'appointmentscheduled', // First stage in Sales Pipeline
         pipeline: 'default',
+        dealtype: 'newbusiness',
+        hubspot_owner_id: DEFAULT_HUBSPOT_OWNER_ID,
+        practice: practice,
+        service_category: 'Interim', // Executive vacancies are typically interim
+        source: 'BD', // Business Development (Lead5 is a BD tool)
+        source_details: 'Lead5 Scout',
         description: `${description}\n\nSource: Lead5 Scout\nLocation: ${metro}\nPosted: ${postedDate}`,
       },
     }),
