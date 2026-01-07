@@ -59,8 +59,97 @@ async function markSignalProcessed(signalId: string): Promise<void> {
   }
 }
 
-// Default owner for new deals from Lead5 (Richard Harris - handles most BD)
-const DEFAULT_HUBSPOT_OWNER_ID = process.env.HUBSPOT_DEFAULT_OWNER_ID || '10675373';
+// Territory-based owner assignment
+// Fallback to Precious Tumolto for triage if territory can't be determined
+const OWNER_IDS = {
+  stephenLavin: '601003945',    // Midwest
+  richardHarris: '10675373',    // Mid-Atlantic/New England/South Atlantic
+  gregPascuzzi: '19061677',     // South Central West
+  bradWheeler: '18427319',      // West
+  helmutOehring: '1154290984',  // Pacific NW/Mountain West
+  andrewHalford: '248862339',   // Canada
+  katieButtry: '206139696',     // UK/International
+  preciousTumolto: '1654341068', // Fallback/Triage
+};
+
+// Metro to state mapping (common metros from Lead5)
+const METRO_TO_STATE: Record<string, string> = {
+  // Midwest (Stephen Lavin)
+  'Chicago': 'IL', 'Indianapolis': 'IN', 'Detroit': 'MI', 'Minneapolis': 'MN',
+  'Columbus': 'OH', 'Cleveland': 'OH', 'Cincinnati': 'OH', 'Milwaukee': 'WI',
+  'St. Louis': 'MO', 'Kansas City': 'MO',
+  // Mid-Atlantic/New England/South Atlantic (Richard Harris)
+  'New York': 'NY', 'New York City': 'NY', 'NYC': 'NY', 'Boston': 'MA',
+  'Philadelphia': 'PA', 'Washington': 'DC', 'Washington D.C.': 'DC', 'DC': 'DC',
+  'Baltimore': 'MD', 'Richmond': 'VA', 'Charlotte': 'NC', 'Raleigh': 'NC',
+  'Atlanta': 'GA', 'Miami': 'FL', 'Tampa': 'FL', 'Orlando': 'FL', 'Jacksonville': 'FL',
+  'Nashville': 'TN', 'Birmingham': 'AL', 'Hartford': 'CT', 'Providence': 'RI',
+  // South Central West (Greg Pascuzzi)
+  'Dallas': 'TX', 'Houston': 'TX', 'Austin': 'TX', 'San Antonio': 'TX', 'Fort Worth': 'TX',
+  'Oklahoma City': 'OK', 'Tulsa': 'OK', 'New Orleans': 'LA', 'Little Rock': 'AR',
+  // West (Brad Wheeler)
+  'Los Angeles': 'CA', 'San Francisco': 'CA', 'San Diego': 'CA', 'San Jose': 'CA',
+  'Phoenix': 'AZ', 'Las Vegas': 'NV', 'Albuquerque': 'NM', 'Honolulu': 'HI',
+  // Pacific NW/Mountain West (Helmut Oehring)
+  'Seattle': 'WA', 'Portland': 'OR', 'Denver': 'CO', 'Salt Lake City': 'UT',
+  'Boise': 'ID', 'Spokane': 'WA',
+  // Canada (Andrew Halford)
+  'Toronto': 'CA-ON', 'Vancouver': 'CA-BC', 'Montreal': 'CA-QC', 'Calgary': 'CA-AB',
+  // UK (Katie Buttry)
+  'London': 'UK', 'Manchester': 'UK', 'Edinburgh': 'UK',
+};
+
+// State to owner mapping
+const STATE_TO_OWNER: Record<string, string> = {
+  // Midwest - Stephen Lavin
+  'IA': OWNER_IDS.stephenLavin, 'IN': OWNER_IDS.stephenLavin, 'IL': OWNER_IDS.stephenLavin,
+  'MO': OWNER_IDS.stephenLavin, 'KY': OWNER_IDS.stephenLavin, 'SD': OWNER_IDS.stephenLavin,
+  'OH': OWNER_IDS.stephenLavin, 'MN': OWNER_IDS.stephenLavin, 'ND': OWNER_IDS.stephenLavin,
+  'WI': OWNER_IDS.stephenLavin, 'MI': OWNER_IDS.stephenLavin, 'NE': OWNER_IDS.stephenLavin,
+  // Mid-Atlantic/New England/South Atlantic - Richard Harris
+  'VT': OWNER_IDS.richardHarris, 'NC': OWNER_IDS.richardHarris, 'NY': OWNER_IDS.richardHarris,
+  'RI': OWNER_IDS.richardHarris, 'ME': OWNER_IDS.richardHarris, 'TN': OWNER_IDS.richardHarris,
+  'FL': OWNER_IDS.richardHarris, 'DE': OWNER_IDS.richardHarris, 'AL': OWNER_IDS.richardHarris,
+  'NJ': OWNER_IDS.richardHarris, 'SC': OWNER_IDS.richardHarris, 'PA': OWNER_IDS.richardHarris,
+  'WV': OWNER_IDS.richardHarris, 'MS': OWNER_IDS.richardHarris, 'MA': OWNER_IDS.richardHarris,
+  'CT': OWNER_IDS.richardHarris, 'NH': OWNER_IDS.richardHarris, 'GA': OWNER_IDS.richardHarris,
+  'DC': OWNER_IDS.richardHarris, 'VA': OWNER_IDS.richardHarris, 'MD': OWNER_IDS.richardHarris,
+  // South Central West - Greg Pascuzzi
+  'TX': OWNER_IDS.gregPascuzzi, 'OK': OWNER_IDS.gregPascuzzi, 'LA': OWNER_IDS.gregPascuzzi,
+  'KS': OWNER_IDS.gregPascuzzi, 'AR': OWNER_IDS.gregPascuzzi,
+  // West - Brad Wheeler
+  'NM': OWNER_IDS.bradWheeler, 'HI': OWNER_IDS.bradWheeler, 'AK': OWNER_IDS.bradWheeler,
+  'CA': OWNER_IDS.bradWheeler, 'AZ': OWNER_IDS.bradWheeler, 'NV': OWNER_IDS.bradWheeler,
+  // Pacific NW/Mountain West - Helmut Oehring
+  'OR': OWNER_IDS.helmutOehring, 'MT': OWNER_IDS.helmutOehring, 'WY': OWNER_IDS.helmutOehring,
+  'CO': OWNER_IDS.helmutOehring, 'WA': OWNER_IDS.helmutOehring, 'UT': OWNER_IDS.helmutOehring,
+  'ID': OWNER_IDS.helmutOehring,
+  // Canada - Andrew Halford
+  'CA-ON': OWNER_IDS.andrewHalford, 'CA-BC': OWNER_IDS.andrewHalford,
+  'CA-QC': OWNER_IDS.andrewHalford, 'CA-AB': OWNER_IDS.andrewHalford,
+  // UK/International - Katie Buttry
+  'UK': OWNER_IDS.katieButtry,
+};
+
+function getOwnerByMetro(metro: string): string {
+  // Try exact match first
+  const state = METRO_TO_STATE[metro];
+  if (state && STATE_TO_OWNER[state]) {
+    return STATE_TO_OWNER[state];
+  }
+
+  // Try partial match (metro might include state)
+  for (const [metroName, stateCode] of Object.entries(METRO_TO_STATE)) {
+    if (metro.toLowerCase().includes(metroName.toLowerCase())) {
+      if (STATE_TO_OWNER[stateCode]) {
+        return STATE_TO_OWNER[stateCode];
+      }
+    }
+  }
+
+  // Fallback to Precious for triage
+  return OWNER_IDS.preciousTumolto;
+}
 
 function detectPractice(jobTitle: string): 'CIO' | 'CTO' | 'CISO' | null {
   const title = jobTitle.toLowerCase();
@@ -83,6 +172,9 @@ async function createHubSpotDeal(signal: Signal): Promise<HubSpotDeal | null> {
   // Detect practice area from job title
   const practice = detectPractice(jobTitle);
 
+  // Get owner by territory (metro -> state -> owner)
+  const ownerId = getOwnerByMetro(metro);
+
   // Create deal in HubSpot with all required fields
   const response = await fetch('https://api.hubapi.com/crm/v3/objects/deals', {
     method: 'POST',
@@ -96,7 +188,7 @@ async function createHubSpotDeal(signal: Signal): Promise<HubSpotDeal | null> {
         dealstage: 'appointmentscheduled', // First stage in Sales Pipeline
         pipeline: 'default',
         dealtype: 'newbusiness',
-        hubspot_owner_id: DEFAULT_HUBSPOT_OWNER_ID,
+        hubspot_owner_id: ownerId,
         practice: practice,
         service_category: 'Interim', // Executive vacancies are typically interim
         source: 'BD', // Business Development (Lead5 is a BD tool)
