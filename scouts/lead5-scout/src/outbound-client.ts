@@ -3,6 +3,7 @@
  */
 
 export interface SignalPayload {
+  // Core fields
   opportunityId: string;
   companyName: string;
   jobTitle: string;
@@ -10,6 +11,46 @@ export interface SignalPayload {
   postedDate: string;
   description: string;
   sourceUrl?: string;
+
+  // Enriched: Full description (not truncated)
+  fullDescription?: string;
+
+  // Enriched: Company metadata
+  companyMetadata?: {
+    industry?: string;
+    marketCap?: string;
+    ownership?: string;
+    function?: string;
+  };
+
+  // Enriched: Contacts at company
+  contacts?: Array<{
+    name: string;
+    title: string;
+    email?: string;
+    phone?: string;
+  }>;
+
+  // Enriched: Recent executive moves
+  executiveMoves?: Array<{
+    name: string;
+    title: string;
+    moveType: string;
+    date?: string;
+  }>;
+
+  // Enriched: Related opportunities
+  relatedOpportunities?: Array<{
+    id: string;
+    title: string;
+    url?: string;
+  }>;
+
+  // Enrichment tracking
+  enrichmentStatus?: string;
+  enrichmentError?: string;
+
+  // Raw payload for any additional data
   rawPayload?: Record<string, unknown>;
 }
 
@@ -121,11 +162,23 @@ export class OutboundClient {
       confidence: 0.9,
       summary: `${payload.jobTitle} - ${payload.companyName}`,
       rawPayload: {
+        // Core data
         companyName: payload.companyName,
         jobTitle: payload.jobTitle,
         metro: payload.metro,
         postedDate: payload.postedDate,
         description: payload.description,
+
+        // Enriched data from detail page
+        fullDescription: payload.fullDescription,
+        companyMetadata: payload.companyMetadata,
+        contacts: payload.contacts,
+        executiveMoves: payload.executiveMoves,
+        relatedOpportunities: payload.relatedOpportunities,
+        enrichmentStatus: payload.enrichmentStatus,
+        enrichmentError: payload.enrichmentError,
+
+        // Any additional raw data
         ...payload.rawPayload,
       },
     };

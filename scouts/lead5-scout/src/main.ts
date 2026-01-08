@@ -20,6 +20,56 @@ interface Opportunity {
   url: string;
 }
 
+// === Enriched Data Types ===
+
+interface CompanyContact {
+  name: string;
+  title: string;
+  email?: string;
+  phone?: string;
+}
+
+interface CompanyMetadata {
+  industry?: string;
+  marketCap?: string;
+  ownership?: string;  // "PE-backed", "Public", "Private", "Family-owned"
+  function?: string;   // Job function category
+}
+
+interface ExecutiveMove {
+  name: string;
+  title: string;
+  moveType: string;  // "joined", "promoted", "departed", "hired"
+  date?: string;
+}
+
+interface RelatedOpportunity {
+  id: string;
+  title: string;
+  url?: string;
+}
+
+interface EnrichedOpportunity extends Opportunity {
+  // Full description (not truncated)
+  fullDescription?: string;
+
+  // Company info
+  companyMetadata?: CompanyMetadata;
+
+  // Contacts at company
+  contacts?: CompanyContact[];
+
+  // Recent moves at company
+  executiveMoves?: ExecutiveMove[];
+
+  // Other postings at same company
+  relatedOpportunities?: RelatedOpportunity[];
+
+  // Enrichment tracking
+  enrichmentStatus: 'success' | 'failed' | 'skipped';
+  enrichmentError?: string;
+}
+
 async function login(page: Page, config: Config): Promise<boolean> {
   console.log('Navigating to Lead5 login...');
   await page.goto('https://lead5.com/users/sign_in');
@@ -246,8 +296,290 @@ async function extractOpportunities(page: Page, maxResults: number): Promise<Opp
   return opportunities;
 }
 
-async function processOpportunities(
+// === Detail Page Enrichment ===
+
+async function extractDetailPage(
+  page: Page,
+  opportunity: Opportunity,
+  rateLimitMs: number
+): Promise<Partial<EnrichedOpportunity>> {
+  // Skip if no valid URL
+  if (!opportunity.url || !opportunity.url.includes('ArticleDetails')) {
+    return { enrichmentStatus: 'skipped', enrichmentError: 'No valid detail URL' };
+  }
+
+  try {
+    console.log(`    Fetching detail page...`);
+
+    // Navigate to detail page
+    await page.goto(opportunity.url, { waitUntil: 'networkidle', timeout: 30000 });
+
+    // Wait for Angular app to render
+    await page.waitForTimeout(3000);
+
+    // Extract ALL data using page.evaluate()
+    const detailData = await page.evaluate(() => {
+      const result: {
+        fullDescription?: string;
+        industry?: string;
+        marketCap?: string;
+        ownership?: string;
+        function?: string;
+        contacts: Array<{ name: string; title: string; email?: string; phone?: string }>;
+        executiveMoves: Array<{ name: string; title: string; moveType: string; date?: string }>;
+        relatedOpportunities: Array<{ id: string; title: string; url?: string }>;
+      } = {
+        contacts: [],
+        executiveMoves: [],
+        relatedOpportunities: [],
+      };
+
+      const bodyText = document.body.textContent || '';
+
+      // === FULL DESCRIPTION ===
+      // Look for main content area - try multiple selectors
+      const descriptionSelectors = [
+        '.article-description',
+        '.opportunity-detail',
+        '[class*="description"]',
+        '.content-body',
+        '.article-content',
+        'article',
+      ];
+      for (const selector of descriptionSelectors) {
+        const el = document.querySelector(selector);
+        if (el && el.textContent && el.textContent.length > 200) {
+          result.fullDescription = el.textContent.trim().slice(0, 5000);
+          break;
+        }
+      }
+      // Fallback: get largest text block
+      if (!result.fullDescription) {
+        const allDivs = document.querySelectorAll('div');
+        let longestText = '';
+        allDivs.forEach(div => {
+          const text = div.textContent || '';
+          if (text.length > longestText.length && text.length < 10000) {
+            longestText = text;
+          }
+        });
+        if (longestText.length > 500) {
+          result.fullDescription = longestText.trim().slice(0, 5000);
+        }
+      }
+
+      // === COMPANY METADATA ===
+      // Industry
+      const industryMatch = bodyText.match(/Industry[:\s]+([^\n]+)/i);
+      if (industryMatch) result.industry = industryMatch[1].trim().slice(0, 100);
+
+      // Market Cap
+      const marketCapMatch = bodyText.match(/Market[- ]?Cap[:\s]+([^\n$]+)/i);
+      if (marketCapMatch) result.marketCap = marketCapMatch[1].trim().slice(0, 50);
+
+      // Ownership
+      const ownershipMatch = bodyText.match(/Ownership[:\s]+([^\n]+)/i);
+      if (ownershipMatch) result.ownership = ownershipMatch[1].trim().slice(0, 50);
+
+      // Function
+      const functionMatch = bodyText.match(/Function[:\s]+([^\n]+)/i);
+      if (functionMatch) result.function = functionMatch[1].trim().slice(0, 50);
+
+      // === COMPANY CONTACTS ===
+      // Look for contact sections
+      const contactSelectors = [
+        '[class*="contact"]',
+        '[class*="Contact"]',
+        '.company-contacts li',
+        '[class*="person"]',
+      ];
+      const seenContacts = new Set<string>();
+
+      for (const selector of contactSelectors) {
+        const elements = document.querySelectorAll(selector);
+        elements.forEach(el => {
+          const text = el.textContent || '';
+          if (text.length < 10 || text.length > 500) return;
+
+          // Look for name + title patterns
+          // Pattern: "John Smith, CFO" or "John Smith - Chief Financial Officer"
+          const patterns = [
+            /([A-Z][a-z]+\s+[A-Z][a-z]+)\s*[-,]\s*([\w\s]+)/,
+            /([\w\s]+)\s*\|\s*([\w\s]+)/,
+          ];
+
+          for (const pattern of patterns) {
+            const match = text.match(pattern);
+            if (match) {
+              const name = match[1].trim();
+              const title = match[2].trim();
+              const key = `${name}-${title}`;
+              if (!seenContacts.has(key) && name.length > 3 && title.length > 2) {
+                seenContacts.add(key);
+
+                // Look for email in same element
+                const emailMatch = text.match(/[\w.-]+@[\w.-]+\.\w+/);
+                // Look for phone
+                const phoneMatch = text.match(/[\d-().]{10,}/);
+
+                result.contacts.push({
+                  name,
+                  title,
+                  email: emailMatch ? emailMatch[0] : undefined,
+                  phone: phoneMatch ? phoneMatch[0] : undefined,
+                });
+              }
+              break;
+            }
+          }
+        });
+      }
+
+      // === EXECUTIVE MOVES ===
+      // Look for recent moves section
+      const moveSelectors = [
+        '[class*="executive"]',
+        '[class*="move"]',
+        '.recent-moves li',
+        '[class*="hired"]',
+        '[class*="departed"]',
+      ];
+      const seenMoves = new Set<string>();
+
+      for (const selector of moveSelectors) {
+        const elements = document.querySelectorAll(selector);
+        elements.forEach(el => {
+          const text = el.textContent || '';
+          if (text.length < 10 || text.length > 500) return;
+
+          // Look for move patterns
+          const moveMatch = text.match(/(joined|departed|promoted|hired|appointed|named|left)/i);
+          if (moveMatch) {
+            // Try to extract name and title
+            const nameMatch = text.match(/([A-Z][a-z]+\s+[A-Z][a-z]+)/);
+            const titleMatch = text.match(/(CEO|CFO|CIO|CTO|CISO|VP|Director|President|Chief[\w\s]+Officer)/i);
+
+            if (nameMatch) {
+              const key = `${nameMatch[1]}-${moveMatch[1]}`;
+              if (!seenMoves.has(key)) {
+                seenMoves.add(key);
+                result.executiveMoves.push({
+                  name: nameMatch[1],
+                  title: titleMatch ? titleMatch[1] : 'Unknown',
+                  moveType: moveMatch[1].toLowerCase(),
+                });
+              }
+            }
+          }
+        });
+      }
+
+      // === RELATED OPPORTUNITIES ===
+      // Look for related/similar opportunities
+      const relatedSelectors = [
+        '[class*="related"] a',
+        '.similar-opportunities a',
+        '[class*="Related"] a',
+      ];
+
+      for (const selector of relatedSelectors) {
+        const links = document.querySelectorAll(selector);
+        links.forEach(link => {
+          const href = link.getAttribute('href') || '';
+          const text = link.textContent || '';
+
+          // Check if it's an opportunity link
+          const idMatch = href.match(/ArticleDetails\/(\d+)/);
+          if (idMatch && text.length > 5) {
+            result.relatedOpportunities.push({
+              id: idMatch[1],
+              title: text.trim().slice(0, 100),
+              url: href.startsWith('http') ? href : `https://lead5.com${href}`,
+            });
+          }
+        });
+      }
+
+      return result;
+    });
+
+    // Add jitter to rate limit (appear more human)
+    const jitter = Math.floor(Math.random() * 1000);
+    await page.waitForTimeout(rateLimitMs + jitter);
+
+    return {
+      fullDescription: detailData.fullDescription,
+      companyMetadata: {
+        industry: detailData.industry,
+        marketCap: detailData.marketCap,
+        ownership: detailData.ownership,
+        function: detailData.function,
+      },
+      contacts: detailData.contacts,
+      executiveMoves: detailData.executiveMoves,
+      relatedOpportunities: detailData.relatedOpportunities,
+      enrichmentStatus: 'success',
+    };
+
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    console.error(`    Failed to extract detail page: ${errorMsg}`);
+    return {
+      enrichmentStatus: 'failed',
+      enrichmentError: errorMsg,
+    };
+  }
+}
+
+async function enrichOpportunities(
+  page: Page,
   opportunities: Opportunity[],
+  rateLimitMs: number
+): Promise<EnrichedOpportunity[]> {
+  const enriched: EnrichedOpportunity[] = [];
+
+  console.log(`\nEnriching ${opportunities.length} opportunities with detail page data...`);
+
+  for (let i = 0; i < opportunities.length; i++) {
+    const opp = opportunities[i];
+    console.log(`  [${i + 1}/${opportunities.length}] ${opp.company} - ${opp.title}`);
+
+    const detailData = await extractDetailPage(page, opp, rateLimitMs);
+
+    enriched.push({
+      ...opp,
+      fullDescription: detailData.fullDescription,
+      companyMetadata: detailData.companyMetadata,
+      contacts: detailData.contacts,
+      executiveMoves: detailData.executiveMoves,
+      relatedOpportunities: detailData.relatedOpportunities,
+      enrichmentStatus: detailData.enrichmentStatus || 'skipped',
+      enrichmentError: detailData.enrichmentError,
+    });
+
+    // Log what we found
+    if (detailData.enrichmentStatus === 'success') {
+      const contactCount = detailData.contacts?.length || 0;
+      const moveCount = detailData.executiveMoves?.length || 0;
+      const hasMetadata = detailData.companyMetadata?.industry || detailData.companyMetadata?.ownership;
+      console.log(`    ✓ Enriched: ${contactCount} contacts, ${moveCount} moves, metadata: ${hasMetadata ? 'yes' : 'no'}`);
+    }
+  }
+
+  // Log enrichment stats
+  const stats = {
+    total: enriched.length,
+    success: enriched.filter(e => e.enrichmentStatus === 'success').length,
+    failed: enriched.filter(e => e.enrichmentStatus === 'failed').length,
+    skipped: enriched.filter(e => e.enrichmentStatus === 'skipped').length,
+  };
+  console.log(`\nEnrichment complete: ${stats.success} success, ${stats.failed} failed, ${stats.skipped} skipped`);
+
+  return enriched;
+}
+
+async function processOpportunities(
+  opportunities: EnrichedOpportunity[],
   client: OutboundClient,
   rateLimitMs: number
 ): Promise<{ created: number; skipped: number; failed: number }> {
@@ -255,6 +587,7 @@ async function processOpportunities(
 
   for (const opp of opportunities) {
     const payload: SignalPayload = {
+      // Core fields
       opportunityId: opp.id,
       companyName: opp.company,
       jobTitle: opp.title,
@@ -262,6 +595,17 @@ async function processOpportunities(
       postedDate: opp.postedDate,
       description: opp.description,
       sourceUrl: opp.url,
+
+      // Enriched fields
+      fullDescription: opp.fullDescription,
+      companyMetadata: opp.companyMetadata,
+      contacts: opp.contacts,
+      executiveMoves: opp.executiveMoves,
+      relatedOpportunities: opp.relatedOpportunities,
+      enrichmentStatus: opp.enrichmentStatus,
+      enrichmentError: opp.enrichmentError,
+
+      // Raw payload with all data
       rawPayload: { ...opp },
     };
 
@@ -365,7 +709,7 @@ async function main(): Promise<void> {
     await outboundClient.reportStatus('navigating_to_search');
     await navigateToSearch(page);
 
-    // Extract opportunities
+    // Extract opportunities from search results
     await outboundClient.reportStatus('extracting_opportunities');
     const opportunities = await extractOpportunities(page, config.maxResults);
     console.log(`Extracted ${opportunities.length} opportunities`);
@@ -377,9 +721,19 @@ async function main(): Promise<void> {
       await page.screenshot({ path: 'debug-screenshot.png', fullPage: true });
     }
 
-    // Process opportunities
+    // Enrich opportunities with detail page data
+    await outboundClient.reportStatus('enriching_opportunities');
+    const enrichedOpportunities = await enrichOpportunities(page, opportunities, config.rateLimitMs);
+    await outboundClient.reportStatus('enrichment_complete', {
+      total: enrichedOpportunities.length,
+      success: enrichedOpportunities.filter(e => e.enrichmentStatus === 'success').length,
+      failed: enrichedOpportunities.filter(e => e.enrichmentStatus === 'failed').length,
+      skipped: enrichedOpportunities.filter(e => e.enrichmentStatus === 'skipped').length,
+    });
+
+    // Process enriched opportunities → create signals
     await outboundClient.reportStatus('processing_opportunities');
-    const stats = await processOpportunities(opportunities, outboundClient, config.rateLimitMs);
+    const stats = await processOpportunities(enrichedOpportunities, outboundClient, config.rateLimitMs);
 
     console.log('\n=== Scout Run Complete ===');
     console.log(`Created: ${stats.created}`);
