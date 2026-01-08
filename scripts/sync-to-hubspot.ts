@@ -15,6 +15,14 @@ if (!HUBSPOT_ACCESS_TOKEN) {
   process.exit(1);
 }
 
+interface PEContact {
+  name: string;
+  title: string;
+  organization: string;
+  email?: string;
+  linkedIn?: string;
+}
+
 interface Signal {
   id: string;
   type: string;
@@ -27,6 +35,7 @@ interface Signal {
     metro: string;
     postedDate: string;
     description: string;
+    peContacts?: PEContact[];
   };
   summary: string;
 }
@@ -36,6 +45,23 @@ interface HubSpotDeal {
   properties: {
     dealname: string;
     dealstage: string;
+  };
+}
+
+interface HubSpotCompany {
+  id: string;
+  properties: {
+    name: string;
+    private_equity_relationship?: string;
+  };
+}
+
+interface HubSpotContact {
+  id: string;
+  properties: {
+    firstname: string;
+    lastname: string;
+    email?: string;
   };
 }
 
@@ -244,6 +270,393 @@ async function findExistingDeal(companyName: string): Promise<HubSpotDeal | null
   return null;
 }
 
+// Helper to add delay between API calls for rate limiting
+async function delay(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * Map PE title to pe_contact_role enum value
+ */
+function mapTitleToRole(title: string): string | undefined {
+  const t = title.toLowerCase();
+  if (t.includes('managing partner')) return 'managing_partner';
+  if (t.includes('operating partner')) return 'operating_partner';
+  if (t.includes('partner')) return 'partner';
+  if (t.includes('principal')) return 'principal';
+  if (t.includes('managing director')) return 'managing_director';
+  if (t.includes('vice president') || t.includes('vp')) return 'vice_president';
+  if (t.includes('director')) return 'director';
+  if (t.includes('associate')) return 'associate';
+  if (t.includes('analyst')) return 'analyst';
+  if (t.includes('board')) return 'board_member';
+  if (t.includes('advisor')) return 'advisor';
+  return undefined;
+}
+
+/**
+ * Find or create a PE Firm company in HubSpot
+ */
+async function findOrCreatePEFirm(orgName: string): Promise<string | null> {
+  // 1. Search for existing company by name
+  const searchResponse = await fetch('https://api.hubapi.com/crm/v3/objects/companies/search', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${HUBSPOT_ACCESS_TOKEN}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      filterGroups: [{
+        filters: [{
+          propertyName: 'name',
+          operator: 'EQ',
+          value: orgName,
+        }],
+      }],
+      properties: ['name', 'private_equity_relationship'],
+      limit: 1,
+    }),
+  });
+
+  if (searchResponse.ok) {
+    const data = await searchResponse.json();
+    if (data.results && data.results.length > 0) {
+      const existing = data.results[0] as HubSpotCompany;
+      console.log(`    Found existing PE firm: ${existing.properties.name} (${existing.id})`);
+      return existing.id;
+    }
+  }
+
+  await delay(200);
+
+  // 2. Create new PE firm company
+  const createResponse = await fetch('https://api.hubapi.com/crm/v3/objects/companies', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${HUBSPOT_ACCESS_TOKEN}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      properties: {
+        name: orgName,
+        private_equity_relationship: 'Private Equity Firm',
+        type: 'PROSPECT', // They're a potential source of referrals
+      },
+    }),
+  });
+
+  if (!createResponse.ok) {
+    const error = await createResponse.text();
+    console.error(`    Failed to create PE firm ${orgName}:`, error);
+    return null;
+  }
+
+  const newCompany = await createResponse.json() as HubSpotCompany;
+  console.log(`    Created PE firm: ${orgName} (${newCompany.id})`);
+  return newCompany.id;
+}
+
+/**
+ * Find or create a portfolio company in HubSpot
+ */
+async function findOrCreatePortfolioCompany(companyName: string): Promise<string | null> {
+  // 1. Search for existing company by name
+  const searchResponse = await fetch('https://api.hubapi.com/crm/v3/objects/companies/search', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${HUBSPOT_ACCESS_TOKEN}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      filterGroups: [{
+        filters: [{
+          propertyName: 'name',
+          operator: 'EQ',
+          value: companyName,
+        }],
+      }],
+      properties: ['name', 'private_equity_relationship'],
+      limit: 1,
+    }),
+  });
+
+  if (searchResponse.ok) {
+    const data = await searchResponse.json();
+    if (data.results && data.results.length > 0) {
+      const existing = data.results[0] as HubSpotCompany;
+      console.log(`    Found existing portfolio company: ${existing.properties.name} (${existing.id})`);
+
+      // Update to mark as Portfolio Company if not already set
+      if (existing.properties.private_equity_relationship !== 'Portfolio Company') {
+        await delay(200);
+        await fetch(`https://api.hubapi.com/crm/v3/objects/companies/${existing.id}`, {
+          method: 'PATCH',
+          headers: {
+            'Authorization': `Bearer ${HUBSPOT_ACCESS_TOKEN}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            properties: {
+              private_equity_relationship: 'Portfolio Company',
+            },
+          }),
+        });
+        console.log(`    Updated ${companyName} to Portfolio Company`);
+      }
+      return existing.id;
+    }
+  }
+
+  await delay(200);
+
+  // 2. Create new portfolio company
+  const createResponse = await fetch('https://api.hubapi.com/crm/v3/objects/companies', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${HUBSPOT_ACCESS_TOKEN}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      properties: {
+        name: companyName,
+        private_equity_relationship: 'Portfolio Company',
+        type: 'PROSPECT',
+      },
+    }),
+  });
+
+  if (!createResponse.ok) {
+    const error = await createResponse.text();
+    console.error(`    Failed to create portfolio company ${companyName}:`, error);
+    return null;
+  }
+
+  const newCompany = await createResponse.json() as HubSpotCompany;
+  console.log(`    Created portfolio company: ${companyName} (${newCompany.id})`);
+  return newCompany.id;
+}
+
+/**
+ * Find or create a PE contact in HubSpot and associate with PE firm
+ */
+async function findOrCreatePEContact(
+  contact: PEContact,
+  peFirmId: string
+): Promise<string | null> {
+  // 1. Parse name into firstname/lastname
+  const nameParts = contact.name.trim().split(/\s+/);
+  const firstname = nameParts[0];
+  const lastname = nameParts.slice(1).join(' ') || nameParts[0];
+
+  // 2. Search for existing contact
+  let searchFilters: Array<{ propertyName: string; operator: string; value: string }>;
+
+  if (contact.email) {
+    // Search by email if available
+    searchFilters = [{
+      propertyName: 'email',
+      operator: 'EQ',
+      value: contact.email,
+    }];
+  } else {
+    // Search by name
+    searchFilters = [
+      { propertyName: 'firstname', operator: 'EQ', value: firstname },
+      { propertyName: 'lastname', operator: 'EQ', value: lastname },
+    ];
+  }
+
+  const searchResponse = await fetch('https://api.hubapi.com/crm/v3/objects/contacts/search', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${HUBSPOT_ACCESS_TOKEN}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      filterGroups: [{
+        filters: searchFilters,
+      }],
+      properties: ['firstname', 'lastname', 'email', 'pe_contact_role'],
+      limit: 1,
+    }),
+  });
+
+  if (searchResponse.ok) {
+    const data = await searchResponse.json();
+    if (data.results && data.results.length > 0) {
+      const existing = data.results[0] as HubSpotContact;
+      console.log(`      Found existing PE contact: ${existing.properties.firstname} ${existing.properties.lastname} (${existing.id})`);
+
+      // Ensure association exists
+      await delay(200);
+      await associateContactWithCompany(existing.id, peFirmId);
+      return existing.id;
+    }
+  }
+
+  await delay(200);
+
+  // 3. Create new contact
+  const contactProperties: Record<string, string | undefined> = {
+    firstname,
+    lastname,
+    pe_contact_role: mapTitleToRole(contact.title),
+  };
+
+  if (contact.email) {
+    contactProperties.email = contact.email;
+  }
+  if (contact.linkedIn) {
+    contactProperties.hs_linkedinbio = contact.linkedIn;
+  }
+
+  // Remove undefined values
+  const cleanProperties = Object.fromEntries(
+    Object.entries(contactProperties).filter(([_, v]) => v !== undefined)
+  );
+
+  const createResponse = await fetch('https://api.hubapi.com/crm/v3/objects/contacts', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${HUBSPOT_ACCESS_TOKEN}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      properties: cleanProperties,
+    }),
+  });
+
+  if (!createResponse.ok) {
+    const error = await createResponse.text();
+    console.error(`      Failed to create PE contact ${contact.name}:`, error);
+    return null;
+  }
+
+  const newContact = await createResponse.json() as HubSpotContact;
+  console.log(`      Created PE contact: ${contact.name} (${newContact.id})`);
+
+  // 4. Associate contact with PE firm company
+  await delay(200);
+  await associateContactWithCompany(newContact.id, peFirmId);
+
+  return newContact.id;
+}
+
+/**
+ * Associate a contact with a company
+ */
+async function associateContactWithCompany(contactId: string, companyId: string): Promise<void> {
+  const response = await fetch(
+    `https://api.hubapi.com/crm/v4/objects/contacts/${contactId}/associations/companies/${companyId}`,
+    {
+      method: 'PUT',
+      headers: {
+        'Authorization': `Bearer ${HUBSPOT_ACCESS_TOKEN}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify([
+        {
+          associationCategory: 'HUBSPOT_DEFINED',
+          associationTypeId: 1, // Contact to Company
+        },
+      ]),
+    }
+  );
+
+  if (!response.ok) {
+    const error = await response.text();
+    console.error(`      Failed to associate contact ${contactId} with company ${companyId}:`, error);
+  }
+}
+
+/**
+ * Associate PE firm (parent) with portfolio company (child)
+ */
+async function associatePEFirmWithPortfolio(peFirmId: string, portfolioCompanyId: string): Promise<void> {
+  // Create parent/child association (PE firm is parent, portfolio company is child)
+  // typeId 14 = parent company association
+  const response = await fetch(
+    `https://api.hubapi.com/crm/v4/objects/companies/${portfolioCompanyId}/associations/companies/${peFirmId}`,
+    {
+      method: 'PUT',
+      headers: {
+        'Authorization': `Bearer ${HUBSPOT_ACCESS_TOKEN}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify([
+        {
+          associationCategory: 'HUBSPOT_DEFINED',
+          associationTypeId: 14, // Parent company
+        },
+      ]),
+    }
+  );
+
+  if (!response.ok) {
+    const error = await response.text();
+    console.error(`    Failed to associate PE firm with portfolio company:`, error);
+  } else {
+    console.log(`    Linked PE firm (${peFirmId}) as parent of portfolio company (${portfolioCompanyId})`);
+  }
+}
+
+/**
+ * Process PE contacts from a signal - create PE firms, contacts, and associations
+ */
+async function processPEContacts(
+  peContacts: PEContact[],
+  portfolioCompanyName: string
+): Promise<void> {
+  if (!peContacts || peContacts.length === 0) {
+    return;
+  }
+
+  console.log(`  Processing ${peContacts.length} PE contacts...`);
+
+  // Find or create the portfolio company first
+  const portfolioCompanyId = await findOrCreatePortfolioCompany(portfolioCompanyName);
+  await delay(200);
+
+  // Group contacts by organization (PE firm)
+  const contactsByOrg = new Map<string, PEContact[]>();
+  for (const contact of peContacts) {
+    if (contact.organization) {
+      const existing = contactsByOrg.get(contact.organization) || [];
+      existing.push(contact);
+      contactsByOrg.set(contact.organization, existing);
+    }
+  }
+
+  // Process each PE firm and its contacts
+  for (const [orgName, contacts] of contactsByOrg) {
+    console.log(`    Processing PE firm: ${orgName} (${contacts.length} contacts)`);
+
+    const peFirmId = await findOrCreatePEFirm(orgName);
+    if (!peFirmId) {
+      console.log(`    Skipping contacts - could not create PE firm`);
+      continue;
+    }
+    await delay(200);
+
+    // Associate PE firm with portfolio company if we have both
+    if (portfolioCompanyId) {
+      await associatePEFirmWithPortfolio(peFirmId, portfolioCompanyId);
+      await delay(200);
+    }
+
+    // Create contacts
+    for (const contact of contacts) {
+      try {
+        await findOrCreatePEContact(contact, peFirmId);
+        await delay(200);
+      } catch (error) {
+        console.error(`      Error creating contact ${contact.name}:`, error);
+        // Continue with other contacts
+      }
+    }
+  }
+}
+
 async function main() {
   console.log('=== Syncing Signals to HubSpot ===');
   console.log(`Outbound API: ${OUTBOUND_API_URL}`);
@@ -283,6 +696,17 @@ async function main() {
       const deal = await createHubSpotDeal(signal);
       if (deal) {
         console.log(`  ✅ Created deal: ${deal.id}`);
+
+        // Process PE contacts if present
+        if (signal.rawPayload.peContacts && signal.rawPayload.peContacts.length > 0) {
+          try {
+            await processPEContacts(signal.rawPayload.peContacts, companyName);
+          } catch (peError) {
+            console.error(`  ⚠️  PE contact processing failed:`, peError);
+            // Don't fail the whole sync - deal was created successfully
+          }
+        }
+
         await markSignalProcessed(signal.id);
         created++;
       } else {

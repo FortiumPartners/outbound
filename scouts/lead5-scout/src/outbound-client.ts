@@ -46,6 +46,15 @@ export interface SignalPayload {
     url?: string;
   }>;
 
+  // Enriched: PE Contacts (investors/board members)
+  peContacts?: Array<{
+    name: string;
+    title: string;
+    organization: string;
+    email?: string;
+    linkedIn?: string;
+  }>;
+
   // Enrichment tracking
   enrichmentStatus?: string;
   enrichmentError?: string;
@@ -173,6 +182,7 @@ export class OutboundClient {
         fullDescription: payload.fullDescription,
         companyMetadata: payload.companyMetadata,
         contacts: payload.contacts,
+        peContacts: payload.peContacts,
         executiveMoves: payload.executiveMoves,
         relatedOpportunities: payload.relatedOpportunities,
         enrichmentStatus: payload.enrichmentStatus,

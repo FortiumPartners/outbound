@@ -49,6 +49,14 @@ interface RelatedOpportunity {
   url?: string;
 }
 
+interface PEContact {
+  name: string;
+  title: string;
+  organization: string;
+  email?: string;
+  linkedIn?: string;
+}
+
 interface EnrichedOpportunity extends Opportunity {
   // Full description (not truncated)
   fullDescription?: string;
@@ -58,6 +66,9 @@ interface EnrichedOpportunity extends Opportunity {
 
   // Contacts at company
   contacts?: CompanyContact[];
+
+  // PE investor contacts
+  peContacts?: PEContact[];
 
   // Recent moves at company
   executiveMoves?: ExecutiveMove[];
@@ -84,215 +95,609 @@ async function login(page: Page, config: Config): Promise<boolean> {
   // Submit
   await page.click('input[type="submit"], button[type="submit"]');
 
-  // Wait for redirect (either dashboard or app)
-  try {
-    await page.waitForURL(/\/(business\/dashboard|l5\/app)/, { timeout: 15000 });
-    console.log('Login successful');
-    return true;
-  } catch (error) {
-    console.error('Login failed - did not redirect to expected page');
+  // Wait for navigation away from login page
+  await page.waitForTimeout(5000);
+
+  const currentUrl = page.url();
+  console.log(`After login, URL: ${currentUrl}`);
+
+  // Check if we're no longer on the login page
+  if (currentUrl.includes('sign_in')) {
+    console.error('Login failed - still on login page');
     return false;
   }
+
+  // Accept various redirect destinations
+  if (currentUrl.includes('lead5.com')) {
+    console.log('Login successful');
+    return true;
+  }
+
+  console.error('Login failed - unexpected redirect');
+  return false;
 }
 
 async function navigateToSearch(page: Page): Promise<void> {
   console.log('Navigating to executive search...');
-  await page.goto('https://lead5.com/l5/app/#/l5/app/Search/1');
 
-  // Wait for the search page to load
-  await page.waitForTimeout(3000); // Angular app needs time to render
+  // First, go to the Feed page (where login redirects)
+  // Use domcontentloaded instead of load for Angular apps
+  await page.goto('https://lead5.com/l5/app/#/l5/app/Feed', {
+    waitUntil: 'domcontentloaded',
+    timeout: 30000,
+  });
 
-  // Click on "My5 Jobs" to trigger the search
+  // Wait for Angular app to fully render
+  await page.waitForTimeout(5000);
+
+  // Click on "My5 Jobs" in sidebar to load search results
+  // The element is a generic div, not a link, so we need multiple strategies
+  console.log('Clicking My5 Jobs in sidebar...');
+
+  let clicked = false;
+
+  // Strategy 1: Click by exact text match (first occurrence in sidebar)
   try {
-    console.log('Clicking My5 Jobs to load results...');
-    await page.click('text=My5 Jobs');
-    await page.waitForTimeout(3000);
+    const my5JobsElements = page.locator('text=My5 Jobs');
+    const count = await my5JobsElements.count();
+    console.log(`  Found ${count} "My5 Jobs" elements`);
+
+    if (count > 0) {
+      // Click the first one (sidebar menu item)
+      await my5JobsElements.first().click({ timeout: 5000 });
+      clicked = true;
+      console.log('  ✓ Clicked My5 Jobs (first match)');
+    }
   } catch (error) {
-    console.log('Could not click My5 Jobs, continuing anyway');
+    console.log('  Strategy 1 failed:', (error as Error).message);
+  }
+
+  // Strategy 2: Find by role/accessibility
+  if (!clicked) {
+    try {
+      await page.getByRole('button', { name: /My5 Jobs/i }).click({ timeout: 3000 });
+      clicked = true;
+      console.log('  ✓ Clicked My5 Jobs (button role)');
+    } catch {
+      console.log('  Strategy 2 failed: no button with My5 Jobs');
+    }
+  }
+
+  // Strategy 3: Click any element containing the text in the sidebar/nav area
+  if (!clicked) {
+    try {
+      await page.locator('[class*="sidebar"] >> text=My5 Jobs').first().click({ timeout: 3000 });
+      clicked = true;
+      console.log('  ✓ Clicked My5 Jobs (sidebar selector)');
+    } catch {
+      console.log('  Strategy 3 failed: no sidebar element');
+    }
+  }
+
+  // Strategy 4: Use JavaScript to find and click
+  if (!clicked) {
+    try {
+      const jsClicked = await page.evaluate(() => {
+        const elements = document.querySelectorAll('*');
+        for (const el of elements) {
+          const text = el.textContent?.trim();
+          // Find element where direct text is "My5 Jobs" (not nested)
+          if (text === 'My5 Jobs' ||
+              (el.childNodes.length === 1 &&
+               el.childNodes[0].nodeType === Node.TEXT_NODE &&
+               el.childNodes[0].textContent?.trim() === 'My5 Jobs')) {
+            (el as HTMLElement).click();
+            return true;
+          }
+        }
+        return false;
+      });
+      if (jsClicked) {
+        clicked = true;
+        console.log('  ✓ Clicked My5 Jobs (JavaScript)');
+      }
+    } catch {
+      console.log('  Strategy 4 failed: JS click failed');
+    }
+  }
+
+  // Strategy 5: Navigate directly to Search URL as fallback
+  if (!clicked) {
+    console.log('  All click strategies failed, navigating directly to Search URL...');
+    await page.goto('https://lead5.com/l5/app/#/l5/app/Search/1', {
+      waitUntil: 'domcontentloaded',
+      timeout: 30000,
+    });
+  }
+
+  // Wait for search results to load
+  await page.waitForTimeout(5000);
+
+  // Verify we're on the search page
+  const currentUrl = page.url();
+  console.log(`Current URL: ${currentUrl}`);
+
+  if (currentUrl.includes('Search')) {
+    console.log('✓ Successfully navigated to search page');
+  } else {
+    console.log('⚠ May not be on search page, continuing anyway...');
   }
 }
 
-async function extractOpportunities(page: Page, maxResults: number): Promise<Opportunity[]> {
-  console.log('Extracting opportunities from search results...');
+// === Helper Functions for Text Extraction ===
 
-  const opportunities: Opportunity[] = [];
+function slugify(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '').slice(0, 50);
+}
 
-  // Wait for results to load (Angular app)
+function extractCompanyFromText(title: string, cardText: string): string {
+  // Pattern 1: "at Company Name" in title
+  const atMatch = title.match(/\bat\s+([A-Z][^,\n]+?)(?:\s*(?:by|$))/i);
+  if (atMatch) return atMatch[1].trim();
+
+  // Pattern 2: "at CompanyName by Lead5" in card text
+  const cardAtMatch = cardText.match(/at\s+([A-Z][^,\n]+?)\s+by\s+Lead5/i);
+  if (cardAtMatch) return cardAtMatch[1].trim();
+
+  // Pattern 3: "Potential CTO Opportunity at CompanyName"
+  const potentialMatch = cardText.match(/Potential\s+\w+\s+Opportunity\s+at\s+([A-Z][^\n]+?)\s+by/i);
+  if (potentialMatch) return potentialMatch[1].trim();
+
+  return '';
+}
+
+function extractMetroFromText(cardText: string): string {
+  const metroMatch = cardText.match(/Metro:\s*([A-Za-z\s]+?)(?:\s+Posted|$)/);
+  return metroMatch ? metroMatch[1].trim() : '';
+}
+
+function extractDateFromText(cardText: string): string {
+  const dateMatch = cardText.match(/Posted:\s*([A-Za-z]+\s+\d+,\s*\d{4})/);
+  if (dateMatch) {
+    const parsed = new Date(dateMatch[1]);
+    if (!isNaN(parsed.getTime())) {
+      return parsed.toISOString().split('T')[0];
+    }
+  }
+  return new Date().toISOString().split('T')[0];
+}
+
+// === Detail Page Data Extraction ===
+
+interface DetailPageData {
+  fullDescription?: string;
+  company?: string;
+  metro?: string;
+  companyMetadata?: CompanyMetadata;
+  contacts?: CompanyContact[];
+  peContacts?: PEContact[];
+  executiveMoves?: ExecutiveMove[];
+  relatedOpportunities?: RelatedOpportunity[];
+  enrichmentStatus: 'success' | 'failed' | 'skipped';
+  enrichmentError?: string;
+}
+
+/**
+ * Extract PE Contacts by clicking email icons and reading modal dialogs.
+ * Not all PE contacts have email addresses - we extract what's available.
+ */
+async function extractPEContacts(page: Page): Promise<PEContact[]> {
+  const peContacts: PEContact[] = [];
+
+  try {
+    // Wait extra time for PE Contacts section to load (Angular lazy loading)
+    await page.waitForTimeout(2000);
+
+    // Check if PE Contacts section exists using evaluate (more reliable for Angular)
+    const debugInfo = await page.evaluate(() => {
+      const bodyText = document.body.textContent || '';
+      const hasPEContacts = bodyText.includes('PE Contacts');
+
+      // Debug: find all section headers
+      const sectionHeaders: string[] = [];
+      document.querySelectorAll('*').forEach(el => {
+        const text = el.textContent?.trim() || '';
+        if (text.length > 3 && text.length < 30 &&
+            (text.includes('Contact') || text.includes('PE') || text.includes('Investor'))) {
+          sectionHeaders.push(text);
+        }
+      });
+
+      return {
+        hasPEContacts,
+        bodyLength: bodyText.length,
+        sectionHeaders: [...new Set(sectionHeaders)].slice(0, 10),
+      };
+    });
+
+    console.log(`    Debug: bodyLength=${debugInfo.bodyLength}, hasPE=${debugInfo.hasPEContacts}`);
+    if (debugInfo.sectionHeaders.length > 0) {
+      console.log(`    Debug: sections found: ${debugInfo.sectionHeaders.slice(0, 5).join(', ')}`);
+    }
+
+    if (!debugInfo.hasPEContacts) {
+      console.log('    No PE Contacts section found');
+      return peContacts;
+    }
+
+    console.log('    PE Contacts section found!');
+
+    // First, gather contact info from the visible page before clicking modals
+    const visibleContacts = await page.evaluate(() => {
+      const contacts: { name: string; title: string; organization: string }[] = [];
+
+      // Find all elements and their text content
+      const allElements = Array.from(document.querySelectorAll('*'));
+
+      // Find the PE Contacts section header
+      let peContactsSection: Element | null = null;
+      for (const el of allElements) {
+        if (el.textContent?.trim() === 'PE Contacts' && el.children.length === 0) {
+          peContactsSection = el;
+          break;
+        }
+      }
+
+      if (!peContactsSection) {
+        // Fallback: find by partial text
+        for (const el of allElements) {
+          const text = el.textContent?.trim() || '';
+          if (text === 'PE Contacts' || (text.startsWith('PE Contacts') && text.length < 20)) {
+            peContactsSection = el;
+            break;
+          }
+        }
+      }
+
+      if (!peContactsSection) return contacts;
+
+      // Get the parent container and look for contact entries after the header
+      let container = peContactsSection.parentElement;
+      for (let i = 0; i < 3 && container; i++) {
+        container = container.parentElement;
+      }
+
+      if (container) {
+        // Look for links with names (typically contact names are links)
+        container.querySelectorAll('a').forEach(link => {
+          const name = link.textContent?.trim() || '';
+          const parentText = link.parentElement?.textContent || '';
+
+          // Check if this looks like a PE contact (has a title nearby)
+          const hasTitle = parentText.match(/Partner|Managing Director|Principal|Vice President|Director|General Partner/i);
+
+          if (name && name.length > 2 && name.length < 50 && hasTitle && !name.includes('Contact')) {
+            const titleMatch = parentText.match(/(Managing Director|General Partner|Partner|Principal|Vice President|Director)/i);
+            contacts.push({
+              name,
+              title: titleMatch?.[1]?.trim() || '',
+              organization: '',
+            });
+          }
+        });
+      }
+
+      // Deduplicate by name
+      const seen = new Set<string>();
+      return contacts.filter(c => {
+        if (seen.has(c.name)) return false;
+        seen.add(c.name);
+        return true;
+      }).slice(0, 10);
+    });
+
+    console.log(`    Found ${visibleContacts.length} visible PE contacts`);
+
+    // Find all email icons to click (try multiple selectors)
+    let emailIcons = await page.locator('a.iconEmail').all();
+    if (emailIcons.length === 0) {
+      // Fallback selector
+      emailIcons = await page.locator('[class*="iconEmail"]').all();
+    }
+    console.log(`    Found ${emailIcons.length} email icons to process`);
+
+    for (let i = 0; i < Math.min(emailIcons.length, 10); i++) {
+      try {
+        // Click email icon to open Contact Details modal
+        await emailIcons[i].click({ timeout: 3000 });
+        await page.waitForTimeout(1000);
+
+        // Wait for modal to appear (use evaluate for reliability with Angular)
+        await page.waitForTimeout(500);
+        const modalVisible = await page.evaluate(() => {
+          const bodyText = document.body.textContent || '';
+          // Look for modal indicators
+          return bodyText.includes('Contact Details') ||
+                 document.querySelector('[role="dialog"], .modal, [class*="modal"]') !== null;
+        });
+
+        if (!modalVisible) {
+          console.log(`    Modal didn't open for contact ${i + 1}`);
+          continue;
+        }
+
+        // Extract data from modal (inlined to avoid __name TypeScript issue)
+        const contactData = await page.evaluate(() => {
+          // Find modal element
+          let modalEl: Element | null = document.querySelector('[class*="modal"], [role="dialog"], .modal-content, [class*="dialog"]');
+
+          if (!modalEl) {
+            // Try finding by text content
+            const allElements = document.querySelectorAll('*');
+            for (const el of allElements) {
+              if (el.textContent?.includes('Contact Details') && el.querySelector('button, [class*="close"]')) {
+                modalEl = el;
+                break;
+              }
+            }
+          }
+
+          if (!modalEl) return null;
+
+          // Extract data from found element
+          const text = modalEl.textContent || '';
+
+          // Try to find name (usually in a heading or bold text)
+          const nameEl = modalEl.querySelector('h1, h2, h3, h4, .modal-title, [class*="title"], strong, b');
+          let name = nameEl?.textContent?.trim() || '';
+          // Clean up name - remove "Contact Details" if it was captured
+          name = name.replace(/Contact Details/i, '').trim();
+
+          // Find organization
+          const orgEl = modalEl.querySelector('.subtitle, .organization, [class*="org"], [class*="company"]');
+          const org = orgEl?.textContent?.trim() || '';
+
+          // Extract email (look for email pattern)
+          const emailMatch = text.match(/[\w.-]+@[\w.-]+\.\w{2,}/);
+
+          // Extract LinkedIn URL
+          const linkedInLink = modalEl.querySelector('a[href*="linkedin.com"]');
+          const linkedIn = linkedInLink?.getAttribute('href') || undefined;
+
+          return {
+            name: name || null,
+            organization: org || null,
+            email: emailMatch?.[0] || null,
+            linkedIn: linkedIn || null,
+          };
+        });
+
+        if (contactData?.name || contactData?.email || contactData?.linkedIn) {
+          // Use visible contact data by index (email icons correspond to visible contacts in order)
+          const visibleContact = visibleContacts[i];
+
+          // Use name from visible contact (which has title mixed in) or extracted name
+          let candidateName = visibleContact?.name || contactData.name || '';
+
+          // Clean up name - remove title if concatenated (titles may have no space before them)
+          const finalName = candidateName
+            .replace(/\s*(Managing Director|General Partner|Partner|Principal|Vice President|Director|Analyst|Associate|Board Member|Advisor).*$/i, '')
+            .trim() || `Contact ${i + 1}`;
+          const finalTitle = visibleContact?.title || '';
+
+          peContacts.push({
+            name: finalName,
+            title: finalTitle,
+            organization: contactData.organization || visibleContact?.organization || '',
+            email: contactData.email || undefined,
+            linkedIn: contactData.linkedIn || undefined,
+          });
+          console.log(`    Extracted PE contact: ${finalName} (${finalTitle}) ${contactData.email ? `<${contactData.email}>` : '(no email)'}`);
+        }
+
+        // Close modal - try multiple approaches
+        const closeButton = page.locator('[class*="close"], button:has-text("x"), button:has-text("Close"), .btn-close').first();
+        const closeVisible = await closeButton.isVisible({ timeout: 1000 }).catch(() => false);
+
+        if (closeVisible) {
+          await closeButton.click({ timeout: 2000 });
+        } else {
+          // Fallback: press Escape
+          await page.keyboard.press('Escape');
+        }
+        await page.waitForTimeout(500);
+
+      } catch (error) {
+        console.log(`    Failed to extract PE contact ${i + 1}: ${(error as Error).message}`);
+        // Try to close any open modal
+        await page.keyboard.press('Escape').catch(() => {});
+        await page.waitForTimeout(300);
+      }
+    }
+
+  } catch (error) {
+    console.log(`    PE Contacts extraction failed: ${(error as Error).message}`);
+  }
+
+  return peContacts;
+}
+
+async function extractDetailPageData(page: Page, cardText: string): Promise<DetailPageData> {
+  try {
+    // 1. Basic page data via evaluate
+    const pageData = await page.evaluate(() => {
+      const result: {
+        fullDescription?: string;
+        company?: string;
+        metro?: string;
+        industry?: string;
+        ownership?: string;
+      } = {};
+
+      const bodyText = document.body.textContent || '';
+
+      // Try to get full description from main content area
+      const descriptionSelectors = [
+        '.article-description',
+        '.opportunity-detail',
+        '[class*="description"]',
+        '.content-body',
+        '.article-content',
+        'article',
+      ];
+
+      for (const selector of descriptionSelectors) {
+        const el = document.querySelector(selector);
+        if (el && el.textContent && el.textContent.length > 200) {
+          result.fullDescription = el.textContent.trim().slice(0, 5000);
+          break;
+        }
+      }
+
+      // Fallback: get largest text block
+      if (!result.fullDescription) {
+        const allDivs = document.querySelectorAll('div');
+        let longestText = '';
+        allDivs.forEach(div => {
+          const text = div.textContent || '';
+          if (text.length > longestText.length && text.length < 10000) {
+            longestText = text;
+          }
+        });
+        if (longestText.length > 500) {
+          result.fullDescription = longestText.trim().slice(0, 5000);
+        }
+      }
+
+      // Extract company metadata
+      const industryMatch = bodyText.match(/Industry[:\s]+([^\n]+)/i);
+      if (industryMatch) result.industry = industryMatch[1].trim().slice(0, 100);
+
+      const ownershipMatch = bodyText.match(/Ownership[:\s]+([^\n]+)/i);
+      if (ownershipMatch) result.ownership = ownershipMatch[1].trim().slice(0, 50);
+
+      return result;
+    });
+
+    // 2. PE Contacts (requires clicking modals - cannot be done in page.evaluate)
+    const peContacts = await extractPEContacts(page);
+
+    return {
+      fullDescription: pageData.fullDescription,
+      companyMetadata: {
+        industry: pageData.industry,
+        ownership: pageData.ownership,
+      },
+      peContacts,
+      enrichmentStatus: 'success',
+    };
+  } catch (error) {
+    console.log(`    Warning: Could not extract detail page data: ${(error as Error).message}`);
+    return {
+      enrichmentStatus: 'failed',
+      enrichmentError: (error as Error).message,
+    };
+  }
+}
+
+// === Main Opportunity Extraction (Click-Through Approach) ===
+
+async function extractOpportunities(page: Page, maxResults: number): Promise<EnrichedOpportunity[]> {
+  console.log('Extracting opportunities via click-through...');
+
+  // Wait for Angular app to fully render
   await page.waitForTimeout(3000);
 
-  // Debug: Log page content to understand structure
-  const bodyText = await page.locator('body').textContent();
-  console.log('Page text sample:', bodyText?.slice(0, 500));
-
-  // Wait for specific content that indicates results loaded
-  try {
-    await page.waitForSelector('text=Vacancy', { timeout: 10000 });
-    console.log('Found "Vacancy" text on page');
-  } catch {
-    console.log('No "Vacancy" text found, trying alternatives...');
-    try {
-      await page.waitForSelector('text=POTENTIAL OPPORTUNITY', { timeout: 5000 });
-      console.log('Found "POTENTIAL OPPORTUNITY" text');
-    } catch {
-      console.log('Could not find expected content markers');
-    }
-  }
-
-  // Scroll to trigger any lazy loading
-  await page.evaluate(() => window.scrollBy(0, 500));
-  await page.waitForTimeout(1000);
-
-  // Check for iframes
-  const iframes = await page.locator('iframe').all();
-  console.log(`Found ${iframes.length} iframes`);
-
-  // Debug: Count all links and their text
-  const linkDebug = await page.evaluate(() => {
-    const links = document.querySelectorAll('a');
-    const linkTexts: string[] = [];
-    links.forEach(l => {
-      const text = (l.textContent || '').trim();
-      if (text.length > 5 && text.length < 100) {
-        linkTexts.push(text);
-      }
-    });
-    // Also check for any element containing 'Vacancy'
-    const vacancyElements = document.querySelectorAll('*');
-    let vacancyCount = 0;
-    vacancyElements.forEach(el => {
-      if ((el.textContent || '').includes('Vacancy')) vacancyCount++;
-    });
-    return { count: links.length, samples: linkTexts.slice(0, 20), vacancyCount };
-  });
-  console.log(`Total links: ${linkDebug.count}, elements with 'Vacancy': ${linkDebug.vacancyCount}`);
-  console.log('Sample link texts:', linkDebug.samples);
-
-  // If there are iframes, try to access their content
-  if (iframes.length > 0) {
-    console.log('Attempting to access iframe content...');
-    for (let i = 0; i < iframes.length; i++) {
-      try {
-        const frame = await iframes[i].contentFrame();
-        if (frame) {
-          const frameText = await frame.locator('body').textContent();
-          console.log(`Iframe ${i} text sample:`, frameText?.slice(0, 300));
-        }
-      } catch (e) {
-        console.log(`Could not access iframe ${i}`);
-      }
-    }
-  }
-
-  // Use JavaScript evaluation to extract opportunities directly from the DOM
-  // Search ALL elements for opportunity titles, not just links
-  const extractedData = await page.evaluate(() => {
-    const results: Array<{
-      title: string;
-      href: string;
-      cardText: string;
-    }> = [];
+  // 1. Find all opportunity cards
+  const opportunityCards = await page.evaluate(() => {
+    const cards: { index: number; title: string; cardText: string }[] = [];
     const seenTitles = new Set<string>();
 
-    // Find ALL elements containing vacancy/opportunity keywords
-    const allElements = document.querySelectorAll('*');
-    allElements.forEach(el => {
-      const text = el.textContent || '';
-      const directText = el.childNodes.length === 1 && el.childNodes[0].nodeType === Node.TEXT_NODE
-        ? (el.childNodes[0] as Text).textContent || ''
-        : '';
-
-      // Look for title-like text (short, contains keywords)
-      const checkText = directText || (text.length < 100 ? text : '');
-
-      if ((checkText.includes('Vacancy') || checkText.includes('Chief Technology Officer') ||
-           checkText.includes('Chief Information Officer') || checkText.includes('Chief Financial Officer') ||
-           checkText.includes('Chief Security Officer')) &&
-          checkText.length > 15 && checkText.length < 100) {
-
-        const title = checkText.trim();
-        if (seenTitles.has(title)) return;
+    document.querySelectorAll('.itemTitleBlack').forEach((el, index) => {
+      const title = el.textContent?.trim() || '';
+      if (title && !seenTitles.has(title) &&
+          (title.includes('Vacancy') || title.includes('Chief') ||
+           title.includes('CTO') || title.includes('CIO') ||
+           title.includes('CFO') || title.includes('Opportunity'))) {
         seenTitles.add(title);
 
-        // Find href - look for nearby link or in ancestors
-        let href = '';
-        const nearestLink = el.querySelector('a') || el.closest('a');
-        if (nearestLink) {
-          href = nearestLink.getAttribute('href') || '';
-        }
-
-        // Get parent container for more context
+        // Get parent card text for company/metro extraction
         let parent = el.parentElement;
-        let cardText = '';
-        for (let i = 0; i < 8 && parent; i++) {
-          cardText = parent.textContent || '';
-          if (cardText.length > 300 && cardText.includes('Posted:')) break;
+        for (let i = 0; i < 5 && parent; i++) {
+          if (parent.textContent && parent.textContent.length > 200) break;
           parent = parent.parentElement;
         }
-
-        results.push({
+        cards.push({
+          index,
           title,
-          href,
-          cardText: cardText.slice(0, 1500),
+          cardText: (parent?.textContent || '').slice(0, 2000),
         });
       }
     });
 
-    return results;
+    return cards;
   });
 
-  console.log(`Found ${extractedData.length} potential opportunities via JS evaluation`);
+  console.log(`Found ${opportunityCards.length} opportunity cards to process`);
 
-  for (let i = 0; i < Math.min(extractedData.length, maxResults); i++) {
-    const data = extractedData[i];
+  const opportunities: EnrichedOpportunity[] = [];
+  const cardsToProcess = opportunityCards.slice(0, maxResults);
 
-    // Skip navigation links
-    if (data.title.length < 10 || data.title.includes('Menu')) continue;
+  // 2. Click each card to navigate to detail page
+  for (let i = 0; i < cardsToProcess.length; i++) {
+    const card = cardsToProcess[i];
+    console.log(`  [${i + 1}/${cardsToProcess.length}] Processing: ${card.title.slice(0, 50)}...`);
 
-    // Extract ID from href, or create stable ID from title
-    const idMatch = data.href.match(/ArticleDetails\/(\d+)/);
-    // Use article ID if available, otherwise create stable slug from title
-    const slugify = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '').slice(0, 50);
-    const id = idMatch ? idMatch[1] : slugify(data.title);
+    try {
+      // Click the card
+      const itemSelector = `.itemTitleBlack:has-text("${card.title.slice(0, 30)}")`;
+      await page.locator(itemSelector).first().click({ timeout: 5000 });
+      await page.waitForTimeout(3000);
 
-    // Extract company from title
-    const atMatch = data.title.match(/at\s+(.+?)(?:\s*$)/i);
-    const company = atMatch ? atMatch[1].trim() : '';
+      // Capture URL
+      const detailUrl = page.url();
+      console.log(`    URL: ${detailUrl}`);
 
-    // Extract metro from card text
-    const metroMatch = data.cardText.match(/Metro:\s*([^\n]+?)(?:\s*Posted|$)/);
-    const metro = metroMatch ? metroMatch[1].trim() : '';
+      if (detailUrl.includes('ArticleDetails')) {
+        // Extract ID from URL (alphanumeric, not just digits)
+        const idMatch = detailUrl.match(/ArticleDetails\/([a-zA-Z0-9]+)/);
+        const id = idMatch ? idMatch[1] : slugify(card.title);
 
-    // Extract posted date
-    let postedDate = new Date().toISOString().split('T')[0];
-    const dateMatch = data.cardText.match(/Posted:\s*([A-Za-z]+\s+\d+,\s*\d{4})/);
-    if (dateMatch) {
-      const parsed = new Date(dateMatch[1]);
-      if (!isNaN(parsed.getTime())) {
-        postedDate = parsed.toISOString().split('T')[0];
+        // Extract data while ON detail page
+        const enrichedData = await extractDetailPageData(page, card.cardText);
+
+        // Parse company/metro from card text
+        const company = extractCompanyFromText(card.title, card.cardText);
+        const metro = extractMetroFromText(card.cardText);
+        const postedDate = extractDateFromText(card.cardText);
+
+        // Clean up the title
+        const cleanTitle = card.title.replace(/\s+by\s+Lead5.*$/i, '').trim();
+
+        opportunities.push({
+          id,
+          title: cleanTitle,
+          company: company || enrichedData.company || 'Unknown Company',
+          metro: metro || enrichedData.metro || '',
+          postedDate,
+          description: enrichedData.fullDescription?.slice(0, 500) || '',
+          url: detailUrl,
+          fullDescription: enrichedData.fullDescription,
+          companyMetadata: enrichedData.companyMetadata,
+          contacts: enrichedData.contacts,
+          peContacts: enrichedData.peContacts,
+          executiveMoves: enrichedData.executiveMoves,
+          relatedOpportunities: enrichedData.relatedOpportunities,
+          enrichmentStatus: enrichedData.enrichmentStatus,
+          enrichmentError: enrichedData.enrichmentError,
+        });
+
+        console.log(`    OK Extracted: ${cleanTitle.slice(0, 40)} (${company || 'Unknown'})`);
+      } else {
+        console.log(`    Warning: Not a detail page, skipping`);
       }
-    }
 
-    // Extract description - text after POTENTIAL OPPORTUNITY or the main body
-    let description = '';
-    const descMatch = data.cardText.match(/(?:POTENTIAL OPPORTUNITY|Member Contributed)\s*([^0]+)/);
-    if (descMatch) {
-      description = descMatch[1].trim().slice(0, 500);
-    }
+      // Go back to search results
+      await page.goBack();
+      await page.waitForTimeout(2000);
 
-    if (data.title && company) {
-      opportunities.push({
-        id,
-        title: data.title,
-        company,
-        metro,
-        postedDate,
-        description,
-        url: data.href.startsWith('http') ? data.href : (data.href ? `https://lead5.com${data.href}` : ''),
-      });
-      console.log(`  Found: ${data.title} (${company})`);
+    } catch (error) {
+      console.log(`    Failed: ${(error as Error).message}`);
+      // Continue to next card on error
     }
   }
 
+  console.log(`Extracted ${opportunities.length} opportunities`);
   return opportunities;
 }
 
@@ -709,27 +1114,22 @@ async function main(): Promise<void> {
     await outboundClient.reportStatus('navigating_to_search');
     await navigateToSearch(page);
 
-    // Extract opportunities from search results
+    // Extract opportunities from search results (enrichment happens during click-through)
     await outboundClient.reportStatus('extracting_opportunities');
-    const opportunities = await extractOpportunities(page, config.maxResults);
-    console.log(`Extracted ${opportunities.length} opportunities`);
-    await outboundClient.reportStatus('extraction_complete', { count: opportunities.length });
-
-    if (opportunities.length === 0) {
-      console.log('No opportunities found. The page structure may have changed.');
-      console.log('Taking screenshot for debugging...');
-      await page.screenshot({ path: 'debug-screenshot.png', fullPage: true });
-    }
-
-    // Enrich opportunities with detail page data
-    await outboundClient.reportStatus('enriching_opportunities');
-    const enrichedOpportunities = await enrichOpportunities(page, opportunities, config.rateLimitMs);
-    await outboundClient.reportStatus('enrichment_complete', {
-      total: enrichedOpportunities.length,
+    const enrichedOpportunities = await extractOpportunities(page, config.maxResults);
+    console.log(`Extracted ${enrichedOpportunities.length} opportunities`);
+    await outboundClient.reportStatus('extraction_complete', {
+      count: enrichedOpportunities.length,
       success: enrichedOpportunities.filter(e => e.enrichmentStatus === 'success').length,
       failed: enrichedOpportunities.filter(e => e.enrichmentStatus === 'failed').length,
       skipped: enrichedOpportunities.filter(e => e.enrichmentStatus === 'skipped').length,
     });
+
+    if (enrichedOpportunities.length === 0) {
+      console.log('No opportunities found. The page structure may have changed.');
+      console.log('Taking screenshot for debugging...');
+      await page.screenshot({ path: 'debug-screenshot.png', fullPage: true });
+    }
 
     // Process enriched opportunities → create signals
     await outboundClient.reportStatus('processing_opportunities');
@@ -739,13 +1139,13 @@ async function main(): Promise<void> {
     console.log(`Created: ${stats.created}`);
     console.log(`Skipped: ${stats.skipped}`);
     console.log(`Failed: ${stats.failed}`);
-    console.log(`Total processed: ${opportunities.length}`);
+    console.log(`Total processed: ${enrichedOpportunities.length}`);
 
     await outboundClient.reportStatus('completed', {
       created: stats.created,
       skipped: stats.skipped,
       failed: stats.failed,
-      total: opportunities.length,
+      total: enrichedOpportunities.length,
     });
 
   } catch (error) {
