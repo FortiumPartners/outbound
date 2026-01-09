@@ -62,6 +62,7 @@ interface HubSpotContact {
     firstname: string;
     lastname: string;
     email?: string;
+    pe_contact_role?: string;
   };
 }
 
@@ -487,6 +488,31 @@ async function findOrCreatePEContact(
       const existing = data.results[0] as HubSpotContact;
       console.log(`      Found existing PE contact: ${existing.properties.firstname} ${existing.properties.lastname} (${existing.id})`);
 
+      // Update existing contact with any new info
+      const updates: Record<string, string> = {};
+      // Clean email (remove garbage like "play_arrow" suffix)
+      const cleanEmail = contact.email?.replace(/play_arrow.*$/i, '').trim();
+      if (cleanEmail && !existing.properties.email) {
+        updates.email = cleanEmail;
+      }
+      // Note: hs_linkedinbio property doesn't exist in this HubSpot instance
+      if (contact.title && !existing.properties.pe_contact_role) {
+        updates.pe_contact_role = mapTitleToRole(contact.title);
+      }
+
+      if (Object.keys(updates).length > 0) {
+        console.log(`      Updating with new info:`, Object.keys(updates).join(', '));
+        await delay(200);
+        await fetch(`https://api.hubapi.com/crm/v3/objects/contacts/${existing.id}`, {
+          method: 'PATCH',
+          headers: {
+            'Authorization': `Bearer ${HUBSPOT_ACCESS_TOKEN}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ properties: updates }),
+        });
+      }
+
       // Ensure association exists
       await delay(200);
       await associateContactWithCompany(existing.id, peFirmId);
@@ -503,12 +529,12 @@ async function findOrCreatePEContact(
     pe_contact_role: mapTitleToRole(contact.title),
   };
 
-  if (contact.email) {
-    contactProperties.email = contact.email;
+  // Clean email (remove garbage like "play_arrow" suffix)
+  const cleanEmail = contact.email?.replace(/play_arrow.*$/i, '').trim();
+  if (cleanEmail) {
+    contactProperties.email = cleanEmail;
   }
-  if (contact.linkedIn) {
-    contactProperties.hs_linkedinbio = contact.linkedIn;
-  }
+  // Note: hs_linkedinbio property doesn't exist in this HubSpot instance, skipping LinkedIn
 
   // Remove undefined values
   const cleanProperties = Object.fromEntries(
@@ -617,15 +643,57 @@ async function processPEContacts(
   const portfolioCompanyId = await findOrCreatePortfolioCompany(portfolioCompanyName);
   await delay(200);
 
+  // Try to infer PE firm from contact names (scout may have mixed PE firm name into contact name)
+  const inferPEFirm = (contacts: PEContact[]): string | null => {
+    for (const c of contacts) {
+      // Look for PE firm patterns in corrupted names
+      // Match full firm names like "Leonard Green & Partners" or "Spectrum Equity"
+      const patterns = [
+        /([A-Z][\w]+(?:\s+(?:&\s+)?[\w]+)*\s+(?:Partners|Capital|Equity|Ventures|Group|Management|Advisors|Holdings))/i,
+        // Also try matching from the start of name if it ends with PE firm suffix
+        /^([\w\s&]+(?:Partners|Capital|Equity|Ventures|Group|Management|Advisors|Holdings))/i,
+      ];
+      for (const pattern of patterns) {
+        const match = c.name.match(pattern);
+        if (match) {
+          const firmName = match[1].trim();
+          // Make sure it's a reasonable firm name (at least 2 words)
+          if (firmName.split(/\s+/).length >= 2) {
+            return firmName;
+          }
+        }
+      }
+    }
+    return null;
+  };
+
   // Group contacts by organization (PE firm)
   const contactsByOrg = new Map<string, PEContact[]>();
+  const inferredOrg = inferPEFirm(peContacts);
+
   for (const contact of peContacts) {
-    if (contact.organization) {
-      const existing = contactsByOrg.get(contact.organization) || [];
-      existing.push(contact);
-      contactsByOrg.set(contact.organization, existing);
-    }
+    // Use explicit organization, or inferred one
+    const org = contact.organization || inferredOrg || 'Unknown PE Firm';
+    const existing = contactsByOrg.get(org) || [];
+    existing.push(contact);
+    contactsByOrg.set(org, existing);
   }
+
+  // Clean up contact name (remove embedded PE firm name if present)
+  const cleanContactName = (name: string, peFirm: string | null): string => {
+    if (!name) return 'Unknown Contact';
+    let cleaned = name;
+    // Remove PE firm name patterns
+    if (peFirm) {
+      cleaned = cleaned.replace(new RegExp(peFirm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'), '');
+    }
+    // Remove common suffixes that get mixed in
+    cleaned = cleaned.replace(/California\s*\d*$/i, '');
+    cleaned = cleaned.replace(/New York\s*\d*$/i, '');
+    cleaned = cleaned.replace(/\n+\d*$/g, '');
+    cleaned = cleaned.trim();
+    return cleaned || 'Unknown Contact';
+  };
 
   // Process each PE firm and its contacts
   for (const [orgName, contacts] of contactsByOrg) {
@@ -644,10 +712,14 @@ async function processPEContacts(
       await delay(200);
     }
 
-    // Create contacts
+    // Create contacts with cleaned names
     for (const contact of contacts) {
       try {
-        await findOrCreatePEContact(contact, peFirmId);
+        const cleanedContact = {
+          ...contact,
+          name: cleanContactName(contact.name, orgName),
+        };
+        await findOrCreatePEContact(cleanedContact, peFirmId);
         await delay(200);
       } catch (error) {
         console.error(`      Error creating contact ${contact.name}:`, error);
@@ -687,6 +759,17 @@ async function main() {
       const existing = await findExistingDeal(companyName);
       if (existing) {
         console.log(`  ⏭️  Deal already exists: ${existing.properties.dealname}`);
+
+        // Still process PE contacts for existing deals (may have new data)
+        if (signal.rawPayload.peContacts && signal.rawPayload.peContacts.length > 0) {
+          console.log(`  🔄 Updating PE contacts for existing deal...`);
+          try {
+            await processPEContacts(signal.rawPayload.peContacts, companyName);
+          } catch (peError) {
+            console.error(`  ⚠️  PE contact processing failed:`, peError);
+          }
+        }
+
         await markSignalProcessed(signal.id);
         skipped++;
         continue;

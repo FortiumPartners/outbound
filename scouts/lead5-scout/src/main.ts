@@ -278,231 +278,127 @@ interface DetailPageData {
 }
 
 /**
- * Extract PE Contacts by clicking email icons and reading modal dialogs.
- * Not all PE contacts have email addresses - we extract what's available.
+ * Extract PE Contacts from the PE Investors and PE Contacts sections.
+ * PE firm name comes from "PE Investors" section, contacts from "PE Contacts" section.
+ * Note: PE Contacts have LinkedIn icons, NOT email icons (those are for Company Contacts).
  */
 async function extractPEContacts(page: Page): Promise<PEContact[]> {
   const peContacts: PEContact[] = [];
 
   try {
-    // Wait extra time for PE Contacts section to load (Angular lazy loading)
+    // Wait for Angular lazy loading
     await page.waitForTimeout(2000);
 
-    // Check if PE Contacts section exists using evaluate (more reliable for Angular)
-    const debugInfo = await page.evaluate(() => {
-      const bodyText = document.body.textContent || '';
-      const hasPEContacts = bodyText.includes('PE Contacts');
-
-      // Debug: find all section headers
-      const sectionHeaders: string[] = [];
-      document.querySelectorAll('*').forEach(el => {
-        const text = el.textContent?.trim() || '';
-        if (text.length > 3 && text.length < 30 &&
-            (text.includes('Contact') || text.includes('PE') || text.includes('Investor'))) {
-          sectionHeaders.push(text);
-        }
-      });
-
-      return {
-        hasPEContacts,
-        bodyLength: bodyText.length,
-        sectionHeaders: [...new Set(sectionHeaders)].slice(0, 10),
+    // Extract PE firm name and contacts directly from the DOM
+    const peData = await page.evaluate(() => {
+      const result = {
+        peFirmName: '',
+        contacts: [] as Array<{ name: string; title: string; linkedInUrl: string | null }>,
       };
-    });
 
-    console.log(`    Debug: bodyLength=${debugInfo.bodyLength}, hasPE=${debugInfo.hasPEContacts}`);
-    if (debugInfo.sectionHeaders.length > 0) {
-      console.log(`    Debug: sections found: ${debugInfo.sectionHeaders.slice(0, 5).join(', ')}`);
-    }
+      const bodyText = document.body.textContent || '';
 
-    if (!debugInfo.hasPEContacts) {
-      console.log('    No PE Contacts section found');
-      return peContacts;
-    }
+      // 1. Find PE Investors section to get PE firm name
+      // The structure is: "PE Investors" header followed by firm name like "ICONIQ Capital"
+      const peInvestorsMatch = bodyText.match(/PE Investors\s*([A-Z][\w\s&]+(?:Capital|Partners|Equity|Ventures|Group|Management|Advisors|Holdings))/i);
+      if (peInvestorsMatch) {
+        result.peFirmName = peInvestorsMatch[1].trim();
+      }
 
-    console.log('    PE Contacts section found!');
+      // 2. Check if PE Contacts section exists
+      if (!bodyText.includes('PE Contacts')) {
+        return result;
+      }
 
-    // First, gather contact info from the visible page before clicking modals
-    const visibleContacts = await page.evaluate(() => {
-      const contacts: { name: string; title: string; organization: string }[] = [];
-
-      // Find all elements and their text content
+      // 3. Find PE Contacts section in DOM
       const allElements = Array.from(document.querySelectorAll('*'));
+      let peContactsHeader: Element | null = null;
 
-      // Find the PE Contacts section header
-      let peContactsSection: Element | null = null;
       for (const el of allElements) {
-        if (el.textContent?.trim() === 'PE Contacts' && el.children.length === 0) {
-          peContactsSection = el;
+        const text = el.textContent?.trim() || '';
+        // Look for exact "PE Contacts" header (leaf node)
+        if (text === 'PE Contacts' && el.children.length === 0) {
+          peContactsHeader = el;
           break;
         }
       }
 
-      if (!peContactsSection) {
-        // Fallback: find by partial text
-        for (const el of allElements) {
-          const text = el.textContent?.trim() || '';
-          if (text === 'PE Contacts' || (text.startsWith('PE Contacts') && text.length < 20)) {
-            peContactsSection = el;
-            break;
-          }
+      if (!peContactsHeader) return result;
+
+      // 4. Find the container (GDPeopleContainer) that holds the contacts
+      let container = peContactsHeader.parentElement;
+      for (let i = 0; i < 5 && container; i++) {
+        if (container.classList.contains('GDPeopleContainer') ||
+            container.querySelectorAll('.blackBoldText').length > 0) {
+          break;
         }
-      }
-
-      if (!peContactsSection) return contacts;
-
-      // Get the parent container and look for contact entries after the header
-      let container = peContactsSection.parentElement;
-      for (let i = 0; i < 3 && container; i++) {
         container = container.parentElement;
       }
 
-      if (container) {
-        // Look for links with names (typically contact names are links)
-        container.querySelectorAll('a').forEach(link => {
-          const name = link.textContent?.trim() || '';
-          const parentText = link.parentElement?.textContent || '';
+      if (!container) return result;
 
-          // Check if this looks like a PE contact (has a title nearby)
-          const hasTitle = parentText.match(/Partner|Managing Director|Principal|Vice President|Director|General Partner/i);
+      // 5. Extract each contact from the container
+      // Each contact has: .blackBoldText for name, .grayText for title, .iconLinkedin for LinkedIn
+      const contactRows = container.querySelectorAll('.d-flex.mb15p48px, [class*="mb15p"]');
 
-          if (name && name.length > 2 && name.length < 50 && hasTitle && !name.includes('Contact')) {
-            const titleMatch = parentText.match(/(Managing Director|General Partner|Partner|Principal|Vice President|Director)/i);
-            contacts.push({
-              name,
-              title: titleMatch?.[1]?.trim() || '',
-              organization: '',
-            });
+      contactRows.forEach(row => {
+        const nameEl = row.querySelector('.blackBoldText');
+        const titleEl = row.querySelector('.grayText');
+        const linkedInEl = row.querySelector('a.iconLinkedin, [class*="iconLinkedin"]');
+
+        const name = nameEl?.textContent?.trim() || '';
+        const title = titleEl?.textContent?.trim() || '';
+
+        // Get LinkedIn URL - it's usually in an onclick or the parent link
+        let linkedInUrl: string | null = null;
+        if (linkedInEl) {
+          // The LinkedIn icon might trigger a navigation or have href
+          const parentLink = linkedInEl.closest('a[href*="linkedin"]');
+          if (parentLink) {
+            linkedInUrl = parentLink.getAttribute('href');
           }
-        });
-      }
+        }
+
+        if (name && name.length > 2 && name.length < 60) {
+          result.contacts.push({ name, title, linkedInUrl });
+        }
+      });
 
       // Deduplicate by name
       const seen = new Set<string>();
-      return contacts.filter(c => {
+      result.contacts = result.contacts.filter(c => {
         if (seen.has(c.name)) return false;
         seen.add(c.name);
         return true;
-      }).slice(0, 10);
+      });
+
+      return result;
     });
 
-    console.log(`    Found ${visibleContacts.length} visible PE contacts`);
-
-    // Find all email icons to click (try multiple selectors)
-    let emailIcons = await page.locator('a.iconEmail').all();
-    if (emailIcons.length === 0) {
-      // Fallback selector
-      emailIcons = await page.locator('[class*="iconEmail"]').all();
+    // Log what we found
+    if (peData.peFirmName) {
+      console.log(`    PE Firm: ${peData.peFirmName}`);
+    } else {
+      console.log('    No PE firm name found in PE Investors section');
     }
-    console.log(`    Found ${emailIcons.length} email icons to process`);
 
-    for (let i = 0; i < Math.min(emailIcons.length, 10); i++) {
-      try {
-        // Click email icon to open Contact Details modal
-        await emailIcons[i].click({ timeout: 3000 });
-        await page.waitForTimeout(1000);
+    if (peData.contacts.length === 0) {
+      console.log('    No PE Contacts section or no contacts found');
+      return peContacts;
+    }
 
-        // Wait for modal to appear (use evaluate for reliability with Angular)
-        await page.waitForTimeout(500);
-        const modalVisible = await page.evaluate(() => {
-          const bodyText = document.body.textContent || '';
-          // Look for modal indicators
-          return bodyText.includes('Contact Details') ||
-                 document.querySelector('[role="dialog"], .modal, [class*="modal"]') !== null;
-        });
+    console.log(`    Found ${peData.contacts.length} PE contacts`);
 
-        if (!modalVisible) {
-          console.log(`    Modal didn't open for contact ${i + 1}`);
-          continue;
-        }
-
-        // Extract data from modal (inlined to avoid __name TypeScript issue)
-        const contactData = await page.evaluate(() => {
-          // Find modal element
-          let modalEl: Element | null = document.querySelector('[class*="modal"], [role="dialog"], .modal-content, [class*="dialog"]');
-
-          if (!modalEl) {
-            // Try finding by text content
-            const allElements = document.querySelectorAll('*');
-            for (const el of allElements) {
-              if (el.textContent?.includes('Contact Details') && el.querySelector('button, [class*="close"]')) {
-                modalEl = el;
-                break;
-              }
-            }
-          }
-
-          if (!modalEl) return null;
-
-          // Extract data from found element
-          const text = modalEl.textContent || '';
-
-          // Try to find name (usually in a heading or bold text)
-          const nameEl = modalEl.querySelector('h1, h2, h3, h4, .modal-title, [class*="title"], strong, b');
-          let name = nameEl?.textContent?.trim() || '';
-          // Clean up name - remove "Contact Details" if it was captured
-          name = name.replace(/Contact Details/i, '').trim();
-
-          // Find organization
-          const orgEl = modalEl.querySelector('.subtitle, .organization, [class*="org"], [class*="company"]');
-          const org = orgEl?.textContent?.trim() || '';
-
-          // Extract email (look for email pattern)
-          const emailMatch = text.match(/[\w.-]+@[\w.-]+\.\w{2,}/);
-
-          // Extract LinkedIn URL
-          const linkedInLink = modalEl.querySelector('a[href*="linkedin.com"]');
-          const linkedIn = linkedInLink?.getAttribute('href') || undefined;
-
-          return {
-            name: name || null,
-            organization: org || null,
-            email: emailMatch?.[0] || null,
-            linkedIn: linkedIn || null,
-          };
-        });
-
-        if (contactData?.name || contactData?.email || contactData?.linkedIn) {
-          // Use visible contact data by index (email icons correspond to visible contacts in order)
-          const visibleContact = visibleContacts[i];
-
-          // Use name from visible contact (which has title mixed in) or extracted name
-          let candidateName = visibleContact?.name || contactData.name || '';
-
-          // Clean up name - remove title if concatenated (titles may have no space before them)
-          const finalName = candidateName
-            .replace(/\s*(Managing Director|General Partner|Partner|Principal|Vice President|Director|Analyst|Associate|Board Member|Advisor).*$/i, '')
-            .trim() || `Contact ${i + 1}`;
-          const finalTitle = visibleContact?.title || '';
-
-          peContacts.push({
-            name: finalName,
-            title: finalTitle,
-            organization: contactData.organization || visibleContact?.organization || '',
-            email: contactData.email || undefined,
-            linkedIn: contactData.linkedIn || undefined,
-          });
-          console.log(`    Extracted PE contact: ${finalName} (${finalTitle}) ${contactData.email ? `<${contactData.email}>` : '(no email)'}`);
-        }
-
-        // Close modal - try multiple approaches
-        const closeButton = page.locator('[class*="close"], button:has-text("x"), button:has-text("Close"), .btn-close').first();
-        const closeVisible = await closeButton.isVisible({ timeout: 1000 }).catch(() => false);
-
-        if (closeVisible) {
-          await closeButton.click({ timeout: 2000 });
-        } else {
-          // Fallback: press Escape
-          await page.keyboard.press('Escape');
-        }
-        await page.waitForTimeout(500);
-
-      } catch (error) {
-        console.log(`    Failed to extract PE contact ${i + 1}: ${(error as Error).message}`);
-        // Try to close any open modal
-        await page.keyboard.press('Escape').catch(() => {});
-        await page.waitForTimeout(300);
-      }
+    // Convert to PEContact format
+    for (const contact of peData.contacts) {
+      peContacts.push({
+        name: contact.name,
+        title: contact.title,
+        organization: peData.peFirmName, // Associate with the PE firm
+        email: undefined, // PE Contacts don't have emails in this section
+        linkedIn: contact.linkedInUrl || undefined,
+      });
+      console.log(`    PE Contact: ${contact.name} (${contact.title}) @ ${peData.peFirmName || 'Unknown PE Firm'}`);
     }
 
   } catch (error) {
