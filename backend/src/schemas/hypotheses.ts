@@ -6,6 +6,9 @@ export const hypothesisStatusEnum = z.enum(['draft', 'pending_review', 'approved
 export const generationMethodEnum = z.enum(['manual', 'ai_generated', 'rule_based']);
 export const channelEnum = z.enum(['email', 'linkedin', 'phone', 'in_person', 'other']);
 
+// Extended generation method to include strategic analysis
+export const extendedGenerationMethodEnum = z.enum(['manual', 'ai_generated', 'rule_based', 'strategic_analysis']);
+
 export const createHypothesisSchema = z.object({
   signalId: z.string().uuid().optional(),
   accountId: z.string().uuid().optional(),
@@ -17,10 +20,17 @@ export const createHypothesisSchema = z.object({
   complianceRisk: complianceRiskEnum.default('low'),
   recommendedMessenger: z.string().optional(),
   channel: channelEnum.optional(),
-  generationMethod: generationMethodEnum.default('manual'),
+  generationMethod: extendedGenerationMethodEnum.default('manual'),
   generationModelId: z.string().optional(),
   generationPromptHash: z.string().optional(),
-  score: z.number().min(0).max(1).optional(),
+  score: z.number().min(0).max(100).optional(), // 0-100 for strategic recommendations
+  // Strategic Recommendation fields
+  hubspotDealId: z.string().optional(),
+  hubspotNoteId: z.string().optional(),
+  connections: z.array(z.any()).optional(), // Array of Connection objects
+  contactRecommendations: z.array(z.any()).optional(), // Array of ContactRecommendation objects
+  recommendationSummary: z.string().optional(),
+  status: hypothesisStatusEnum.optional(),
 });
 
 export const updateHypothesisSchema = createHypothesisSchema.partial();
@@ -53,6 +63,12 @@ export const hypothesisResponseSchema = z.object({
   approvedAt: z.string().datetime().nullable(),
   rejectionReason: z.string().nullable(),
   score: z.number().nullable(),
+  // Strategic Recommendation fields
+  hubspotDealId: z.string().nullable(),
+  hubspotNoteId: z.string().nullable(),
+  connections: z.any().nullable(),
+  contactRecommendations: z.any().nullable(),
+  recommendationSummary: z.string().nullable(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
 });

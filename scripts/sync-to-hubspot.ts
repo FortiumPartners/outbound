@@ -2,10 +2,14 @@
  * Sync Outbound signals to HubSpot deals
  *
  * Creates HubSpot deals for unprocessed job_posting signals.
+ * Generates strategic recommendations for each deal.
  * Run: npx tsx scripts/sync-to-hubspot.ts
  */
 
 import 'dotenv/config';
+import { getRecommendationEngine } from '../backend/src/services/recommendation-engine.js';
+import { getHubSpotClient } from '../backend/src/services/hubspot-client.js';
+import { OpportunityContext, StrategicRecommendation } from '../backend/src/services/types.js';
 
 const HUBSPOT_ACCESS_TOKEN = process.env.HUBSPOT_ACCESS_TOKEN;
 const OUTBOUND_API_URL = process.env.OUTBOUND_API_URL || 'http://localhost:8004';
@@ -35,6 +39,7 @@ interface Signal {
     metro: string;
     postedDate: string;
     description: string;
+    url?: string;
     peContacts?: PEContact[];
   };
   summary: string;
@@ -729,6 +734,105 @@ async function processPEContacts(
   }
 }
 
+/**
+ * Generate strategic recommendation and post as note on HubSpot deal
+ */
+async function generateAndPostRecommendation(
+  signal: Signal,
+  dealId: string
+): Promise<StrategicRecommendation | null> {
+  console.log(`  🎯 Generating strategic recommendation...`);
+
+  const { companyName, jobTitle, metro, peContacts } = signal.rawPayload;
+
+  // Build opportunity context from signal
+  const context: OpportunityContext = {
+    signalId: signal.id,
+    company: {
+      name: companyName,
+      metro: metro,
+      // Could add industry/ownership from signal.rawPayload.companyMetadata
+    },
+    jobTitle,
+    peContacts: peContacts || [],
+    peFirms: [...new Set(peContacts?.map(c => c.organization).filter(Boolean) || [])],
+    sourceUrl: signal.rawPayload.url || '',
+    postedDate: signal.rawPayload.postedDate || new Date().toISOString(),
+  };
+
+  try {
+    const engine = getRecommendationEngine();
+    const recommendation = await engine.generateRecommendation(context);
+
+    console.log(`  📊 Recommendation score: ${recommendation.overallScore}/100`);
+    console.log(`  🔗 Found ${recommendation.connections.length} connections`);
+    console.log(`  👥 ${recommendation.contactRecommendations.length} prioritized contacts`);
+
+    // Post as note on HubSpot deal
+    if (recommendation.summary) {
+      try {
+        const hubspot = getHubSpotClient();
+        const note = await hubspot.createDealNote(dealId, recommendation.summary);
+        recommendation.hubspotDealId = dealId;
+        recommendation.hubspotNoteId = note.id;
+        console.log(`  📝 Posted recommendation note: ${note.id}`);
+      } catch (noteError) {
+        console.warn(`  ⚠️  Failed to create note:`, noteError);
+      }
+    }
+
+    // Store recommendation in Outbound via API (as a hypothesis)
+    try {
+      await storeRecommendationAsHypothesis(signal.id, recommendation);
+    } catch (storeError) {
+      console.warn(`  ⚠️  Failed to store hypothesis:`, storeError);
+    }
+
+    return recommendation;
+  } catch (error) {
+    console.error(`  ❌ Recommendation generation failed:`, error);
+    return null;
+  }
+}
+
+/**
+ * Store recommendation as a hypothesis in Outbound
+ */
+async function storeRecommendationAsHypothesis(
+  signalId: string,
+  recommendation: StrategicRecommendation
+): Promise<void> {
+  const topContact = recommendation.contactRecommendations[0];
+
+  const hypothesis = {
+    signalId,
+    title: `Strategic path to ${recommendation.companyName}`,
+    summary: recommendation.summary.substring(0, 500),
+    conversationOpener: topContact?.conversationOpener,
+    score: recommendation.overallScore,
+    generationMethod: 'strategic_analysis',
+    channel: topContact?.channel || 'linkedin',
+    status: 'pending_review',
+    hubspotDealId: recommendation.hubspotDealId,
+    hubspotNoteId: recommendation.hubspotNoteId,
+    connections: recommendation.connections,
+    contactRecommendations: recommendation.contactRecommendations,
+    recommendationSummary: recommendation.summary,
+  };
+
+  const response = await fetch(`${OUTBOUND_API_URL}/api/v1/hypotheses`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(hypothesis),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to store hypothesis: ${response.status}`);
+  }
+
+  console.log(`  💡 Stored hypothesis for signal ${signalId}`);
+}
+
 async function main() {
   console.log('=== Syncing Signals to HubSpot ===');
   console.log(`Outbound API: ${OUTBOUND_API_URL}`);
@@ -788,6 +892,14 @@ async function main() {
             console.error(`  ⚠️  PE contact processing failed:`, peError);
             // Don't fail the whole sync - deal was created successfully
           }
+        }
+
+        // Generate strategic recommendation
+        try {
+          await generateAndPostRecommendation(signal, deal.id);
+        } catch (recError) {
+          console.error(`  ⚠️  Recommendation generation failed:`, recError);
+          // Don't fail the whole sync - deal was created successfully
         }
 
         await markSignalProcessed(signal.id);

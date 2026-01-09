@@ -188,6 +188,13 @@ model Hypothesis {
   // Metrics
   score                Float?   // Predicted success score
 
+  // Strategic Recommendation (from recommendation engine)
+  hubspotDealId        String?  @map("hubspot_deal_id")
+  hubspotNoteId        String?  @map("hubspot_note_id")
+  connections          Json?    // Array of Connection objects (PE relationships, past clients, etc.)
+  contactRecommendations Json?  @map("contact_recommendations") // Array of ContactRecommendation objects
+  recommendationSummary String? @map("recommendation_summary") // Human-readable summary
+
   createdAt            DateTime @default(now()) @map("created_at")
   updatedAt            DateTime @updatedAt @map("updated_at")
 

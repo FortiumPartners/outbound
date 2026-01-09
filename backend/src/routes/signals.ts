@@ -105,7 +105,15 @@ export const signalRoutes: FastifyPluginAsync = async (fastify) => {
   }, async (request, reply) => {
     const data = request.body as CreateSignal;
 
-    const signal = await prisma.signal.create({ data });
+    const signal = await prisma.signal.create({
+      data: {
+        ...data,
+        account: data.accountId ? { connect: { id: data.accountId } } : undefined,
+        contact: data.contactId ? { connect: { id: data.contactId } } : undefined,
+        accountId: undefined,
+        contactId: undefined,
+      } as Parameters<typeof prisma.signal.create>[0]['data'],
+    });
 
     return reply.status(201).send({
       ...signal,
@@ -131,7 +139,13 @@ export const signalRoutes: FastifyPluginAsync = async (fastify) => {
     try {
       const signal = await prisma.signal.update({
         where: { id },
-        data,
+        data: {
+          ...data,
+          account: data.accountId ? { connect: { id: data.accountId } } : undefined,
+          contact: data.contactId ? { connect: { id: data.contactId } } : undefined,
+          accountId: undefined,
+          contactId: undefined,
+        } as Parameters<typeof prisma.signal.update>[0]['data'],
       });
 
       return {

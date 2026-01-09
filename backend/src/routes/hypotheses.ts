@@ -34,6 +34,11 @@ const formatHypothesis = (h: {
   approvedAt: Date | null;
   rejectionReason: string | null;
   score: number | null;
+  hubspotDealId: string | null;
+  hubspotNoteId: string | null;
+  connections: unknown | null;
+  contactRecommendations: unknown | null;
+  recommendationSummary: string | null;
   createdAt: Date;
   updatedAt: Date;
 }) => ({
