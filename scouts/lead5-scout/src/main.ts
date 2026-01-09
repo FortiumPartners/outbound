@@ -231,7 +231,7 @@ function slugify(s: string): string {
 }
 
 function extractCompanyFromText(title: string, cardText: string): string {
-  // Pattern 1: "at Company Name" in title
+  // Pattern 1: "at Company Name" in title (case insensitive start)
   const atMatch = title.match(/\bat\s+([A-Z][^,\n]+?)(?:\s*(?:by|$))/i);
   if (atMatch) return atMatch[1].trim();
 
@@ -242,6 +242,23 @@ function extractCompanyFromText(title: string, cardText: string): string {
   // Pattern 3: "Potential CTO Opportunity at CompanyName"
   const potentialMatch = cardText.match(/Potential\s+\w+\s+Opportunity\s+at\s+([A-Z][^\n]+?)\s+by/i);
   if (potentialMatch) return potentialMatch[1].trim();
+
+  // Pattern 4: "Company Name CIO Vacancy" - title starts with company name
+  const titleCompanyMatch = title.match(/^([A-Z][a-zA-Z\s&.',-]+?)(?:\s+(?:CIO|CTO|CFO|CEO|Chief|VP|Vice|Director|President)\s)/i);
+  if (titleCompanyMatch) return titleCompanyMatch[1].trim();
+
+  // Pattern 5: "CIO Open at Company Name" - position first
+  const openAtMatch = title.match(/(?:CIO|CTO|CFO|CEO|Chief|VP|Director|President)\s+(?:Open|Opening|Position|Vacancy)\s+at\s+([A-Z][^,\n]+)/i);
+  if (openAtMatch) return openAtMatch[1].trim();
+
+  // Pattern 6: Look for company name pattern in card text (Name followed by Metro)
+  const companyMetroMatch = cardText.match(/([A-Z][a-zA-Z\s&.',-]+?)\s+Metro:\s*[A-Za-z]/);
+  if (companyMetroMatch && companyMetroMatch[1].length > 3 && companyMetroMatch[1].length < 80) {
+    // Clean up - remove job titles that might have been captured
+    let company = companyMetroMatch[1].trim();
+    company = company.replace(/\s+(CIO|CTO|CFO|CEO|Chief|VP|Director|President|Open|Vacancy|Opportunity).*$/i, '').trim();
+    if (company.length > 3) return company;
+  }
 
   return '';
 }
@@ -346,8 +363,45 @@ async function extractPEContacts(page: Page): Promise<PEContact[]> {
         const titleEl = row.querySelector('.grayText');
         const linkedInEl = row.querySelector('a.iconLinkedin, [class*="iconLinkedin"]');
 
-        const name = nameEl?.textContent?.trim() || '';
-        const title = titleEl?.textContent?.trim() || '';
+        // Get ONLY direct text content of the name element, not children
+        let name = '';
+        if (nameEl) {
+          // Clone and remove all child elements to get only direct text
+          const clone = nameEl.cloneNode(true) as HTMLElement;
+          clone.querySelectorAll('*').forEach(child => child.remove());
+          name = clone.textContent?.trim() || '';
+
+          // Fallback: if empty, try first text node only
+          if (!name) {
+            const firstTextNode = Array.from(nameEl.childNodes).find(
+              node => node.nodeType === Node.TEXT_NODE && node.textContent?.trim()
+            );
+            name = firstTextNode?.textContent?.trim() || '';
+          }
+        }
+
+        // Get ONLY direct text content of the title element
+        let title = '';
+        if (titleEl) {
+          const clone = titleEl.cloneNode(true) as HTMLElement;
+          clone.querySelectorAll('*').forEach(child => child.remove());
+          title = clone.textContent?.trim() || '';
+
+          if (!title) {
+            const firstTextNode = Array.from(titleEl.childNodes).find(
+              node => node.nodeType === Node.TEXT_NODE && node.textContent?.trim()
+            );
+            title = firstTextNode?.textContent?.trim() || '';
+          }
+        }
+
+        // Clean up name - remove anything after newlines or obvious concatenation issues
+        name = name.split('\n')[0].trim();
+        // Remove title fragments that got concatenated (e.g., "John SmithSenior" -> "John Smith")
+        name = name.replace(/(Senior|Junior|Partner|Director|Managing|Associate|Principal|Vice|President|CEO|CFO|CIO|CTO)$/i, '').trim();
+
+        // Clean up title
+        title = title.split('\n')[0].trim();
 
         // Get LinkedIn URL - it's usually in an onclick or the parent link
         let linkedInUrl: string | null = null;
@@ -359,7 +413,16 @@ async function extractPEContacts(page: Page): Promise<PEContact[]> {
           }
         }
 
-        if (name && name.length > 2 && name.length < 60) {
+        // Validate: name should look like a person's name (2-3 words, reasonable length)
+        const isValidName = name.length >= 3 &&
+                           name.length < 50 &&
+                           !name.includes('Capital') &&
+                           !name.includes('Partners') &&
+                           !name.includes('Equity') &&
+                           !name.includes('Holdings') &&
+                           /^[A-Z][a-z]+(\s+[A-Z]?[a-z]+){0,3}$/.test(name);
+
+        if (isValidName) {
           result.contacts.push({ name, title, linkedInUrl });
         }
       });
@@ -455,6 +518,40 @@ async function extractDetailPageData(page: Page, cardText: string): Promise<Deta
         }
       }
 
+      // Extract company name from detail page
+      // Pattern 1: Look for "Company" label followed by company name
+      const companyLabelMatch = bodyText.match(/Company[:\s]+([A-Z][a-zA-Z\s&.',-]+?)(?:\s+(?:Industry|Metro|Ownership|Function|Market|Posted|PE|\n))/i);
+      if (companyLabelMatch) {
+        result.company = companyLabelMatch[1].trim();
+      }
+
+      // Pattern 2: Look for company in page header/title area
+      if (!result.company) {
+        const titleEl = document.querySelector('h1, .article-title, [class*="title"]');
+        if (titleEl) {
+          const titleText = titleEl.textContent || '';
+          // Extract company from title patterns like "Company Name CIO Vacancy"
+          const titleMatch = titleText.match(/^([A-Z][a-zA-Z\s&.',-]+?)(?:\s+(?:CIO|CTO|CFO|CEO|Chief|VP|Director|President))/i);
+          if (titleMatch) {
+            result.company = titleMatch[1].trim();
+          }
+        }
+      }
+
+      // Pattern 3: Look for "Organization:" or "Org:" label
+      if (!result.company) {
+        const orgMatch = bodyText.match(/(?:Organization|Org)[:\s]+([A-Z][a-zA-Z\s&.',-]+?)(?:\s+(?:Industry|Metro|Ownership|\n))/i);
+        if (orgMatch) {
+          result.company = orgMatch[1].trim();
+        }
+      }
+
+      // Extract metro from detail page
+      const metroMatch = bodyText.match(/Metro[:\s]+([A-Za-z\s,]+?)(?:\s+(?:Posted|Industry|Ownership|\n))/i);
+      if (metroMatch) {
+        result.metro = metroMatch[1].trim().replace(/\s+$/, '');
+      }
+
       // Extract company metadata
       const industryMatch = bodyText.match(/Industry[:\s]+([^\n]+)/i);
       if (industryMatch) result.industry = industryMatch[1].trim().slice(0, 100);
@@ -470,6 +567,8 @@ async function extractDetailPageData(page: Page, cardText: string): Promise<Deta
 
     return {
       fullDescription: pageData.fullDescription,
+      company: pageData.company,
+      metro: pageData.metro,
       companyMetadata: {
         industry: pageData.industry,
         ownership: pageData.ownership,

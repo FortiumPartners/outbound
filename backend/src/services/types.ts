@@ -60,7 +60,8 @@ export type ConnectionType =
   | 'partner_experience'   // A partner worked at this company
   | 'similar_deal'         // Similar deal closed recently
   | 'pe_portfolio'         // Other portfolio company of same PE
-  | 'industry_match';      // Same industry as past wins
+  | 'industry_match'       // Same industry as past wins
+  | 'metro_match';         // Partners available in same metro
 
 export type ConnectionStrength = 'strong' | 'medium' | 'weak';
 
