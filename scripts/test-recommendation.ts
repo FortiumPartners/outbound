@@ -16,7 +16,10 @@ async function main() {
   const response = await fetch(`${OUTBOUND_API_URL}/api/v1/signals?limit=50`);
   const data = await response.json();
 
+  // Find the GitLab signal with clean PE contacts
   const signalWithPE = data.data.find(
+    (s: any) => s.rawPayload?.company === 'GitLab' && s.rawPayload?.peContacts?.length > 0
+  ) || data.data.find(
     (s: any) => s.rawPayload?.peContacts?.length > 0
   );
 

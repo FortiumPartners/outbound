@@ -204,19 +204,7 @@ export class RecommendationEngine {
         });
       }
 
-      // Check for partners in the same metro
-      if (context.company.metro) {
-        const localPartners = await this.partnerConnect.findPartnersInMetro(context.company.metro);
-        if (localPartners.length > 0) {
-          connections.push({
-            type: 'similar_deal',
-            strength: 'weak',
-            via: context.company.metro,
-            evidence: `${localPartners.length} available partner(s) in ${context.company.metro}`,
-            score: 10,
-          });
-        }
-      }
+      // NOTE: Metro/location match removed - Fortium prioritizes ability/experience, not location
     } catch (e) {
       console.warn('Failed to check PartnerConnect:', e);
     }
@@ -336,9 +324,9 @@ export class RecommendationEngine {
       return 'partner_referral';
     }
 
-    // Warm intro if we have past client or similar deal
+    // Warm intro if we have past client, similar deal, or partner experience
     const warmConnection = connections.find(c =>
-      c.type === 'past_client' || c.type === 'similar_deal'
+      c.type === 'past_client' || c.type === 'similar_deal' || c.type === 'partner_experience'
     );
     if (warmConnection) {
       return 'warm_intro';
