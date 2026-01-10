@@ -403,37 +403,21 @@ export class PartnerConnectClientService {
   // ============================================================================
 
   /**
-   * Find partners who have worked at a specific company
+   * Find partners who have worked at a specific company.
+   *
+   * TODO: Not implemented - requires resource-engagement mapping.
+   * The engagement API returns engagements but doesn't directly link to resources.
+   * Would need to query /engagements?resourceUid=X for each resource to build mapping.
+   *
+   * NOTE: For the recommendation engine, we now use functional matching (getAvailablePartnersByRole)
+   * rather than literal company experience matching.
    */
-  async findPartnersWithCompanyExperience(companyName: string): Promise<{
+  async findPartnersWithCompanyExperience(_companyName: string): Promise<{
     partner: PartnerConnectResource;
     engagement: PartnerConnectEngagement;
   }[]> {
-    const [resources, engagements] = await Promise.all([
-      this.getActiveResources(),
-      this.getEngagements(),
-    ]);
-
-    // Build a map of resource UID to resource
-    const resourceMap = new Map<string, PartnerConnectResource>();
-    resources.forEach(r => resourceMap.set(r.uid, r));
-
-    // Find engagements at the company
-    const searchLower = companyName.toLowerCase();
-    const matchingEngagements = engagements.filter(e =>
-      e.clientDisplayName?.toLowerCase().includes(searchLower)
-    );
-
-    // Return partners with their engagements
-    const results: { partner: PartnerConnectResource; engagement: PartnerConnectEngagement }[] = [];
-
-    for (const engagement of matchingEngagements) {
-      // Need to get resource who did this engagement
-      // The engagement doesn't directly link to resource, would need to check resource's engagements
-      // For now, return the engagement info with placeholder for partner lookup
-    }
-
-    return results;
+    // Not implemented - see TODO above
+    return [];
   }
 
   /**
