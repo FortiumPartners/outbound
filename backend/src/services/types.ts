@@ -35,6 +35,9 @@ export interface SignalRawPayload {
   };
 }
 
+// Engagement type for opportunity framing
+export type EngagementType = 'interim' | 'fractional' | 'interim_to_perm' | 'project';
+
 export interface OpportunityContext {
   signalId: string;
   company: {
@@ -48,6 +51,9 @@ export interface OpportunityContext {
   peFirms: string[]; // Extracted unique PE firm names
   sourceUrl: string;
   postedDate: string;
+  // Enhanced fields for functional matching
+  functionalRole?: string;      // Normalized role (CTO, CFO, CIO, etc.)
+  engagementType?: EngagementType;
 }
 
 // ============================================================================
@@ -61,7 +67,7 @@ export type ConnectionType =
   | 'similar_deal'         // Similar deal closed recently
   | 'pe_portfolio'         // Other portfolio company of same PE
   | 'industry_match'       // Same industry as past wins
-  | 'metro_match';         // Partners available in same metro
+  | 'functional_match';    // Partners with matching role (CTO for CTO opportunity)
 
 export type ConnectionStrength = 'strong' | 'medium' | 'weak';
 
@@ -91,6 +97,18 @@ export type ApproachType =
 
 export type Channel = 'email' | 'linkedin' | 'phone' | 'meeting';
 
+// Available partner for functional matching
+export interface AvailablePartner {
+  uid: string;
+  name: string;
+  role: string;              // CTO, CFO, etc.
+  availabilityNext30: number;
+  availabilityNext60?: number;
+  availabilityNext90?: number;
+  relevantExperience?: string;  // Brief summary of relevant background
+  email?: string;
+}
+
 export interface ContactRecommendation {
   contact: {
     name: string;
@@ -110,6 +128,7 @@ export interface ContactRecommendation {
   };
   justification: string; // Why this contact/approach
   conversationOpener?: string; // Claude-generated opener
+  availablePartner?: AvailablePartner; // Partner who could take this engagement
 }
 
 // ============================================================================
@@ -125,6 +144,11 @@ export interface StrategicRecommendation {
   connections: Connection[];
   overallScore: number;  // 0-100 probability of success
 
+  // Enhanced analysis
+  engagementType?: EngagementType;
+  availablePartners: AvailablePartner[];  // Partners with matching role + availability
+  similarDeals: SimilarDeal[];            // Recent closed-won deals in same practice
+
   // Prioritized recommendations
   contactRecommendations: ContactRecommendation[];
 
@@ -136,6 +160,16 @@ export interface StrategicRecommendation {
   generationMethod: 'strategic_analysis';
   hubspotDealId?: string;
   hubspotNoteId?: string;
+}
+
+// Similar deal for framing qualifications
+export interface SimilarDeal {
+  dealId: string;
+  dealName: string;
+  companyName: string;
+  practice: string;
+  closeDate: string;
+  peFirm?: string;
 }
 
 // ============================================================================
@@ -227,6 +261,7 @@ export const SCORING_WEIGHTS = {
     pe_relationship_medium: 25,
     past_client: 35,
     partner_experience: 30,
+    functional_match: 25,      // Partners with matching role + availability
     similar_deal: 20,
     pe_portfolio: 25,
     industry_match: 10,

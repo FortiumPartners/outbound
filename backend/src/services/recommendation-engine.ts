@@ -6,13 +6,13 @@
  *
  * Uses:
  * - HubSpot: PE relationships, closed-won deals, company history
- * - PartnerConnect: Partner availability, work experience
+ * - PartnerConnect: Partner availability, work experience, functional matching
  * - Claude AI: Personalized conversation openers
  */
 
 import Anthropic from '@anthropic-ai/sdk';
 import { getHubSpotClient } from './hubspot-client.js';
-import { getPartnerConnectClient } from './partnerconnect-client.js';
+import { getPartnerConnectClient, normalizeRoleCode, RoleCode } from './partnerconnect-client.js';
 import {
   OpportunityContext,
   Connection,
@@ -23,6 +23,9 @@ import {
   ApproachType,
   Channel,
   PEContact,
+  AvailablePartner,
+  SimilarDeal,
+  EngagementType,
   SCORING_WEIGHTS,
 } from './types.js';
 
@@ -51,19 +54,35 @@ export class RecommendationEngine {
   async generateRecommendation(context: OpportunityContext): Promise<StrategicRecommendation> {
     console.log(`Generating recommendation for ${context.company.name}...`);
 
-    // Step 1: Discover connections
+    // Step 1: Normalize the role from job title
+    const functionalRole = normalizeRoleCode(context.jobTitle);
+    if (functionalRole) {
+      context.functionalRole = functionalRole;
+    }
+
+    // Step 2: Determine engagement type based on company profile
+    const engagementType = this.determineEngagementType(context);
+    context.engagementType = engagementType;
+
+    // Step 3: Discover connections (now includes functional match)
     const connections = await this.discoverConnections(context);
 
-    // Step 2: Score and prioritize contacts
+    // Step 4: Get available partners for functional matching
+    const availablePartners = await this.getAvailablePartnersForRole(context);
+
+    // Step 5: Get similar deals for framing
+    const similarDeals = await this.getSimilarDeals(context);
+
+    // Step 6: Score and prioritize contacts
     const contactRecommendations = await this.prioritizeContacts(context, connections);
 
-    // Step 3: Calculate overall score
+    // Step 7: Calculate overall score
     const overallScore = this.calculateOverallScore(connections, contactRecommendations);
 
-    // Step 4: Generate summary
-    const summary = this.generateSummary(context, connections, contactRecommendations);
+    // Step 8: Generate summary with new format
+    const summary = this.generateSummary(context, connections, contactRecommendations, availablePartners, similarDeals);
 
-    // Step 5: Generate Claude conversation openers for top contacts
+    // Step 9: Generate Claude conversation openers for top contacts
     if (this.anthropic && contactRecommendations.length > 0) {
       await this.generateConversationOpeners(context, connections, contactRecommendations);
     }
@@ -74,11 +93,115 @@ export class RecommendationEngine {
       jobTitle: context.jobTitle,
       connections,
       overallScore,
+      engagementType,
+      availablePartners,
+      similarDeals,
       contactRecommendations,
       summary,
       generatedAt: new Date(),
       generationMethod: 'strategic_analysis',
     };
+  }
+
+  /**
+   * Determine the likely engagement type based on company profile
+   */
+  private determineEngagementType(context: OpportunityContext): EngagementType {
+    const isPEBacked = context.peFirms.length > 0 || context.company.ownership === 'PE-backed';
+    const jobTitleLower = context.jobTitle.toLowerCase();
+
+    // If PE-backed and looking for C-suite, likely interim-to-perm
+    // PE firms often want to test talent before committing
+    if (isPEBacked) {
+      const isCLevel = /\b(cto|cfo|cio|ciso|coo|chief)\b/i.test(jobTitleLower);
+      if (isCLevel) {
+        return 'interim_to_perm';
+      }
+      // VP level at PE-backed - often pure interim for specific projects
+      return 'interim';
+    }
+
+    // Non-PE companies often benefit from fractional for ongoing support
+    const isVPLevel = /\b(vp|vice president|director)\b/i.test(jobTitleLower);
+    if (isVPLevel) {
+      return 'fractional';
+    }
+
+    // Default to project for specific initiatives
+    return 'project';
+  }
+
+  /**
+   * Get available partners that match the functional role
+   */
+  private async getAvailablePartnersForRole(context: OpportunityContext): Promise<AvailablePartner[]> {
+    if (!this.partnerConnect || !context.functionalRole) {
+      return [];
+    }
+
+    try {
+      const resources = await this.partnerConnect.getAvailablePartnersByRole(context.functionalRole as RoleCode);
+
+      // Transform to AvailablePartner format (top 5)
+      return resources.slice(0, 5).map(r => ({
+        uid: r.uid,
+        name: r.displayName,
+        role: r.leadershipRoleCode || context.functionalRole || '',
+        availabilityNext30: r.availabilityNext30 || 0,
+        availabilityNext60: r.availabilityNext60,
+        availabilityNext90: r.availabilityNext90,
+        email: r.primaryEmail,
+      }));
+    } catch (e) {
+      console.warn('Failed to get available partners for role:', e);
+      return [];
+    }
+  }
+
+  /**
+   * Get similar closed-won deals for framing qualifications
+   */
+  private async getSimilarDeals(context: OpportunityContext): Promise<SimilarDeal[]> {
+    const practice = this.mapRoleToPractice(context.functionalRole || context.jobTitle);
+    if (!practice) {
+      return [];
+    }
+
+    try {
+      return await this.hubspot.searchSimilarDeals({ practice, monthsBack: 12 });
+    } catch (e) {
+      console.warn('Failed to get similar deals:', e);
+      return [];
+    }
+  }
+
+  /**
+   * Map a role/job title to a practice area for deal searching
+   */
+  private mapRoleToPractice(roleOrTitle: string): string | null {
+    const input = roleOrTitle.toUpperCase();
+
+    // Direct role code mappings
+    if (input === 'CTO' || input.includes('TECHNOLOGY') || input.includes('TECH')) {
+      return 'Technology';
+    }
+    if (input === 'CFO' || input.includes('FINANCIAL') || input.includes('FINANCE')) {
+      return 'Finance';
+    }
+    if (input === 'CIO' || input.includes('INFORMATION OFFICER')) {
+      return 'Technology'; // CIO often falls under Technology practice
+    }
+    if (input === 'CISO' || input.includes('SECURITY')) {
+      return 'Security';
+    }
+    if (input === 'COO' || input.includes('OPERATING') || input.includes('OPERATIONS')) {
+      return 'Operations';
+    }
+    if (input.includes('ENGINEERING')) {
+      return 'Technology';
+    }
+
+    return null;
   }
 
   /**
@@ -105,7 +228,19 @@ export class RecommendationEngine {
       connections.push(...partnerConnections);
     }
 
-    // 4. Check for industry matches
+    // 4. Check for functional match (partners with matching role + availability)
+    const functionalConnection = await this.checkFunctionalMatch(context);
+    if (functionalConnection) {
+      connections.push(functionalConnection);
+    }
+
+    // 5. Check for similar deals (same practice area)
+    const similarDealConnection = await this.checkSimilarDeals(context);
+    if (similarDealConnection) {
+      connections.push(similarDealConnection);
+    }
+
+    // 6. Check for industry matches
     if (context.company.industry) {
       const industryConnection = await this.checkIndustryMatch(context.company.industry);
       if (industryConnection) {
@@ -117,6 +252,102 @@ export class RecommendationEngine {
     connections.sort((a, b) => b.score - a.score);
 
     return connections;
+  }
+
+  /**
+   * Check for functional match (partners with matching role and availability)
+   */
+  private async checkFunctionalMatch(context: OpportunityContext): Promise<Connection | null> {
+    if (!this.partnerConnect || !context.functionalRole) {
+      return null;
+    }
+
+    try {
+      const roleCode = context.functionalRole as RoleCode;
+
+      // Get all partners with this role
+      const allPartners = await this.partnerConnect.searchPartnersByRole(roleCode);
+
+      // Get available partners with this role
+      const availablePartners = await this.partnerConnect.getAvailablePartnersByRole(roleCode);
+
+      if (allPartners.length === 0) {
+        return null;
+      }
+
+      // Calculate strength based on count and availability
+      const availableCount = availablePartners.length;
+      const totalCount = allPartners.length;
+
+      let strength: ConnectionStrength;
+      let score: number;
+
+      if (availableCount >= 3) {
+        strength = 'strong';
+        score = SCORING_WEIGHTS.connection.functional_match + 10; // Bonus for high availability
+      } else if (availableCount >= 1) {
+        strength = 'medium';
+        score = SCORING_WEIGHTS.connection.functional_match;
+      } else {
+        strength = 'weak';
+        score = SCORING_WEIGHTS.connection.functional_match - 10;
+      }
+
+      return {
+        type: 'functional_match',
+        strength,
+        via: roleCode,
+        evidence: `${totalCount} ${roleCode}s in network, ${availableCount} with availability`,
+        score,
+        metadata: {
+          partnerId: availablePartners[0]?.uid,
+        },
+      };
+    } catch (e) {
+      console.warn('Failed to check functional match:', e);
+      return null;
+    }
+  }
+
+  /**
+   * Check for similar closed-won deals in the same practice area
+   */
+  private async checkSimilarDeals(context: OpportunityContext): Promise<Connection | null> {
+    const practice = this.mapRoleToPractice(context.functionalRole || context.jobTitle);
+    if (!practice) {
+      return null;
+    }
+
+    try {
+      const deals = await this.hubspot.searchSimilarDeals({ practice, monthsBack: 12 });
+
+      if (deals.length === 0) {
+        return null;
+      }
+
+      // Stronger connection if we have PE firm overlap
+      const peFirmsLower = context.peFirms.map(f => f.toLowerCase());
+      const peOverlap = deals.filter(d => d.peFirm && peFirmsLower.includes(d.peFirm.toLowerCase()));
+
+      const strength: ConnectionStrength = peOverlap.length > 0 ? 'strong' : deals.length >= 3 ? 'medium' : 'weak';
+      const score = peOverlap.length > 0
+        ? SCORING_WEIGHTS.connection.similar_deal + 10
+        : SCORING_WEIGHTS.connection.similar_deal;
+
+      return {
+        type: 'similar_deal',
+        strength,
+        via: practice,
+        evidence: `${deals.length} ${practice} placements in past 12mo${peOverlap.length > 0 ? ` (${peOverlap.length} with same PE)` : ''}`,
+        score,
+        metadata: {
+          dealId: deals[0].dealId,
+        },
+      };
+    } catch (e) {
+      console.warn('Failed to check similar deals:', e);
+      return null;
+    }
   }
 
   /**
@@ -374,91 +605,160 @@ export class RecommendationEngine {
   }
 
   /**
-   * Generate human-readable summary
+   * Generate human-readable summary with enhanced format
    */
   private generateSummary(
     context: OpportunityContext,
     connections: Connection[],
-    contacts: ContactRecommendation[]
+    contacts: ContactRecommendation[],
+    availablePartners: AvailablePartner[],
+    similarDeals: SimilarDeal[]
   ): string {
     const lines: string[] = [];
-    const overallScore = this.calculateOverallScore(connections, contacts);
+    const role = context.functionalRole || context.jobTitle;
 
-    // Header with key info
-    lines.push(`🎯 STRATEGIC PATH TO ${context.company.name.toUpperCase()}`);
-    lines.push(`Position: ${context.jobTitle} | Metro: ${context.company.metro || 'Unknown'}`);
-    lines.push(`Overall Score: ${overallScore}/100`);
-    lines.push('─'.repeat(50));
+    // Header
+    lines.push(`## ${role.toUpperCase()} OPPORTUNITY: ${context.company.name.toUpperCase()}`);
     lines.push('');
 
-    // Quick summary
-    const strongConnections = connections.filter(c => c.strength === 'strong');
-    if (strongConnections.length > 0) {
-      lines.push(`✅ STRONG POSITION: We have ${strongConnections.length} strong connection(s) to this opportunity.`);
-    } else if (connections.length > 0) {
-      lines.push(`⚡ MODERATE POSITION: We have ${connections.length} connection(s) but no direct relationship.`);
-    } else {
-      lines.push(`⚠️ COLD OUTREACH: No existing connections found. Consider territory-based approach.`);
-    }
+    // Company info line
+    const industryPart = context.company.industry || 'Unknown industry';
+    const pePart = context.peFirms.length > 0
+      ? `PE-backed (${context.peFirms.join(', ')})`
+      : context.company.ownership || 'Unknown ownership';
+    lines.push(`**Company:** ${industryPart} | ${pePart}`);
+
+    // Engagement type
+    const engagementLabels: Record<EngagementType, string> = {
+      interim: 'Interim',
+      fractional: 'Fractional',
+      interim_to_perm: 'Interim-to-Perm',
+      project: 'Project-Based',
+    };
+    lines.push(`**Engagement Type:** Likely ${engagementLabels[context.engagementType || 'project']}`);
     lines.push('');
 
-    // PE Firms section
-    if (context.peFirms.length > 0) {
-      lines.push('📊 PE INVESTORS');
-      lines.push(`   ${context.peFirms.join(', ')}`);
-      lines.push('');
+    // WHY WE CAN WIN section
+    lines.push('### WHY WE CAN WIN');
+
+    // PE Portfolio Match
+    const peConnection = connections.find(c => c.type === 'pe_relationship');
+    if (peConnection && context.peFirms.length > 0) {
+      lines.push(`- **PE Portfolio Match:** ${peConnection.evidence}`);
     }
 
-    // Connections with context
-    if (connections.length > 0) {
-      lines.push('🔗 CONNECTIONS');
-      for (const conn of connections.slice(0, 4)) {
-        const icon = conn.strength === 'strong' ? '●' : conn.strength === 'medium' ? '◐' : '○';
-        const typeLabel = this.formatConnectionType(conn.type);
-        lines.push(`   ${icon} ${typeLabel}: ${conn.evidence}`);
+    // Functional Fit
+    const functionalConnection = connections.find(c => c.type === 'functional_match');
+    if (functionalConnection) {
+      lines.push(`- **Functional Fit:** ${functionalConnection.evidence}`);
+    }
+
+    // Similar Wins
+    if (similarDeals.length > 0) {
+      const practice = this.mapRoleToPractice(role) || role;
+      lines.push(`- **Similar Wins:** ${similarDeals.length} ${practice} placements in past 12mo`);
+    }
+
+    // Past client
+    const pastClientConnection = connections.find(c => c.type === 'past_client');
+    if (pastClientConnection) {
+      lines.push(`- **Past Client:** ${pastClientConnection.evidence}`);
+    }
+
+    // Partner experience
+    const partnerExpConnection = connections.find(c => c.type === 'partner_experience');
+    if (partnerExpConnection) {
+      lines.push(`- **Partner Experience:** ${partnerExpConnection.evidence}`);
+    }
+
+    // If no connections, note cold outreach
+    if (connections.length === 0) {
+      lines.push('- *No existing connections - cold outreach required*');
+    }
+
+    lines.push('');
+
+    // RECOMMENDED PARTNERS section
+    if (availablePartners.length > 0) {
+      lines.push('### RECOMMENDED PARTNERS (with availability)');
+      for (const partner of availablePartners.slice(0, 3)) {
+        const availabilityPct = partner.availabilityNext30;
+        lines.push(`1. **${partner.name}** - ${partner.role}, ${availabilityPct}% available next 30 days`);
       }
       lines.push('');
     }
 
-    // Recommended contacts with actionable info
+    // PE CONTACTS TO APPROACH section
     if (contacts.length > 0) {
-      lines.push('👥 RECOMMENDED CONTACTS');
-      lines.push('');
+      lines.push('### PE CONTACTS TO APPROACH');
       for (const rec of contacts.slice(0, 3)) {
         const c = rec.contact;
-        lines.push(`   [${rec.priority}] ${c.name}`);
-        lines.push(`       ${c.title} @ ${c.organization || 'PE Firm'}`);
-        lines.push(`       Approach: ${this.formatApproach(rec.approach)} via ${rec.channel}`);
+        lines.push(`1. **${c.name}** (${c.title} @ ${c.organization})`);
+        lines.push(`   - Approach: ${this.formatApproach(rec.approach)}`);
         if (rec.conversationOpener) {
-          // Show full opener, wrapped if needed
-          lines.push(`       Message: "${rec.conversationOpener}"`);
+          lines.push(`   - Opener: "${rec.conversationOpener}"`);
         }
-        lines.push('');
       }
+      lines.push('');
     }
 
-    // Next steps
-    lines.push('📝 NEXT STEPS');
-    if (contacts.length > 0 && contacts[0].approach === 'pe_intro') {
-      lines.push(`   1. Research ${contacts[0].contact.organization} recent activity`);
-      lines.push(`   2. Connect with ${contacts[0].contact.name} on LinkedIn`);
-      lines.push(`   3. Reference our PE portfolio experience in opener`);
-    } else if (contacts.length > 0) {
-      lines.push(`   1. Connect with ${contacts[0].contact.name} on LinkedIn`);
-      lines.push(`   2. Send personalized message using opener above`);
-      lines.push(`   3. Follow up in 3-5 business days if no response`);
-    } else {
-      lines.push('   1. Research company leadership on LinkedIn');
-      lines.push('   2. Identify warm intro paths via team network');
-      lines.push('   3. Consider territory-based direct outreach');
-    }
+    // ROCK SOLID OFFER section
+    lines.push('### ROCK SOLID OFFER');
+    const offer = this.generateRockSolidOffer(context, connections, availablePartners, similarDeals);
+    lines.push(`"${offer}"`);
     lines.push('');
 
     // Footer
-    lines.push('─'.repeat(50));
-    lines.push(`Generated by Lead5 Scout | ${new Date().toLocaleDateString()}`);
+    lines.push('---');
+    lines.push(`*Generated by Lead5 Scout | ${new Date().toLocaleDateString()}*`);
 
     return lines.join('\n');
+  }
+
+  /**
+   * Generate a compelling "rock solid offer" for the MP to use
+   */
+  private generateRockSolidOffer(
+    context: OpportunityContext,
+    connections: Connection[],
+    availablePartners: AvailablePartner[],
+    similarDeals: SimilarDeal[]
+  ): string {
+    const role = context.functionalRole || context.jobTitle;
+    const company = context.company.name;
+
+    // Build the offer based on our strongest assets
+    const parts: string[] = [];
+
+    // Start with the need
+    parts.push(`We understand ${company} is looking for ${role} leadership.`);
+
+    // Add our strongest proof point
+    const peConnection = connections.find(c => c.type === 'pe_relationship');
+    if (peConnection && context.peFirms.length > 0) {
+      parts.push(`We've successfully placed executives at multiple ${context.peFirms[0]} portfolio companies.`);
+    } else if (similarDeals.length > 0) {
+      const practice = this.mapRoleToPractice(role) || role;
+      parts.push(`We've completed ${similarDeals.length} similar ${practice} placements in the past year.`);
+    }
+
+    // Add availability
+    if (availablePartners.length > 0) {
+      const topPartner = availablePartners[0];
+      parts.push(`We have a ${role} with ${topPartner.availabilityNext30}% availability who could start immediately.`);
+    } else {
+      parts.push(`We have experienced ${role}s in our network ready to engage.`);
+    }
+
+    // Close with engagement type framing
+    const engagementType = context.engagementType || 'interim';
+    if (engagementType === 'interim_to_perm') {
+      parts.push('Our interim-to-perm model lets you evaluate fit before committing.');
+    } else if (engagementType === 'fractional') {
+      parts.push('Our fractional model provides senior leadership at a fraction of full-time cost.');
+    }
+
+    return parts.join(' ');
   }
 
   /**
@@ -472,7 +772,7 @@ export class RecommendationEngine {
       similar_deal: 'Similar Deal',
       pe_portfolio: 'PE Portfolio Company',
       industry_match: 'Industry Match',
-      metro_match: 'Metro Match',
+      functional_match: 'Functional Fit',
     };
     return labels[type] || type;
   }

@@ -8,7 +8,7 @@
  * - Associations (relationships between objects)
  */
 
-import { HubSpotDeal, HubSpotCompany, HubSpotContact, HubSpotAssociation } from './types.js';
+import { HubSpotDeal, HubSpotCompany, HubSpotContact, HubSpotAssociation, SimilarDeal } from './types.js';
 
 const HUBSPOT_API_BASE = 'https://api.hubapi.com';
 
@@ -120,6 +120,118 @@ export class HubSpotClient {
     return this.request<HubSpotDeal>(
       `/crm/v3/objects/deals/${dealId}?properties=dealname,dealstage,practice,amount,closedate,hubspot_owner_id`
     );
+  }
+
+  /**
+   * Search for similar closed-won deals by practice area.
+   * Returns deals with associated company information for framing qualifications.
+   */
+  async searchSimilarDeals(params: {
+    practice: string;
+    monthsBack?: number;
+  }): Promise<SimilarDeal[]> {
+    const monthsBack = params.monthsBack ?? 12;
+    const cutoffDate = new Date();
+    cutoffDate.setMonth(cutoffDate.getMonth() - monthsBack);
+    const cutoffTimestamp = cutoffDate.getTime();
+
+    // Build filter groups - closedwon + closedate within range
+    // Note: HubSpot filters within a group are AND'd together
+    const filters: any[] = [
+      { propertyName: 'dealstage', operator: 'EQ', value: 'closedwon' },
+      { propertyName: 'closedate', operator: 'GTE', value: cutoffTimestamp.toString() },
+    ];
+
+    // Add practice filter if the field exists and has a value
+    // We'll filter in memory if the API doesn't support the field
+    const filterWithPractice = [
+      ...filters,
+      { propertyName: 'practice', operator: 'EQ', value: params.practice },
+    ];
+
+    let response: HubSpotSearchResponse<HubSpotDeal>;
+
+    try {
+      // First try with practice filter
+      response = await this.request<HubSpotSearchResponse<HubSpotDeal>>(
+        '/crm/v3/objects/deals/search',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            filterGroups: [{ filters: filterWithPractice }],
+            properties: ['dealname', 'dealstage', 'practice', 'closedate', 'amount'],
+            sorts: [{ propertyName: 'closedate', direction: 'DESCENDING' }],
+            limit: 50,
+          }),
+        }
+      );
+    } catch (error) {
+      // If practice field doesn't exist, search without it and filter in memory
+      response = await this.request<HubSpotSearchResponse<HubSpotDeal>>(
+        '/crm/v3/objects/deals/search',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            filterGroups: [{ filters }],
+            properties: ['dealname', 'dealstage', 'practice', 'closedate', 'amount'],
+            sorts: [{ propertyName: 'closedate', direction: 'DESCENDING' }],
+            limit: 100,
+          }),
+        }
+      );
+    }
+
+    // Filter by practice in memory if needed (case-insensitive partial match)
+    const practiceUpper = params.practice.toUpperCase();
+    const filteredDeals = response.results.filter(deal => {
+      const dealPractice = deal.properties.practice?.toUpperCase() || '';
+      return dealPractice.includes(practiceUpper) || practiceUpper.includes(dealPractice);
+    });
+
+    // Fetch associated company names for each deal
+    const similarDeals: SimilarDeal[] = [];
+
+    for (const deal of filteredDeals.slice(0, 20)) {
+      try {
+        const companyAssociations = await this.getDealCompanies(deal.id);
+        let companyName = 'Unknown Company';
+        let peFirm: string | undefined;
+
+        // Fetch company details for each association
+        for (const assoc of companyAssociations.slice(0, 3)) {
+          try {
+            const company = await this.getCompany(assoc.id);
+            if (company.properties.private_equity_relationship === 'Private Equity Firm') {
+              peFirm = company.properties.name;
+            } else if (companyName === 'Unknown Company') {
+              companyName = company.properties.name;
+            }
+          } catch {
+            // Skip companies we can't fetch
+          }
+        }
+
+        similarDeals.push({
+          dealId: deal.id,
+          dealName: deal.properties.dealname,
+          companyName,
+          practice: deal.properties.practice || params.practice,
+          closeDate: deal.properties.closedate || '',
+          peFirm,
+        });
+      } catch {
+        // Skip deals with association errors
+        similarDeals.push({
+          dealId: deal.id,
+          dealName: deal.properties.dealname,
+          companyName: 'Unknown Company',
+          practice: deal.properties.practice || params.practice,
+          closeDate: deal.properties.closedate || '',
+        });
+      }
+    }
+
+    return similarDeals;
   }
 
   // ============================================================================

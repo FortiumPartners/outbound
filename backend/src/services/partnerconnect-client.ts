@@ -11,9 +11,130 @@
 
 import { PartnerConnectClient, PartnerConnectEngagement, PartnerConnectResource } from './types.js';
 
+/**
+ * Normalized role codes used in PartnerConnect
+ * These match the LeadershipRoleCode values in the API
+ */
+export type RoleCode = 'CTO' | 'CFO' | 'CIO' | 'CISO' | 'COO' | 'VP_ENGINEERING' | 'VP_TECHNOLOGY';
+
+/**
+ * Raw user response from PartnerConnect API (PascalCase)
+ */
+interface PCUserResponse {
+  Uid: string;
+  DisplayName: string;
+  FirstName: string;
+  LastName: string;
+  PrimaryEmail: string;
+  LeadershipRoleCode?: string;
+  City?: string;
+  State?: string;
+  HomeAreaCode?: string;
+  AvailabilityNext30?: number;
+  AvailabilityNext60?: number;
+  AvailabilityNext90?: number;
+  Active?: boolean;
+}
+
 const PC_API_BASE = process.env.PC_API_BASE || 'https://prod-v3.fortiumpartners.io/v3/api';
 const PC_AUTH_URL = process.env.PC_AUTH_URL || 'https://prod-fs-fortiumpartners.us.auth0.com/oauth/token';
 const PC_AUDIENCE = process.env.PC_AUDIENCE || 'https://prod-v3.fortiumpartners.io';
+
+/**
+ * Mapping of job title patterns to normalized role codes
+ * Patterns are matched case-insensitively against job titles
+ */
+const ROLE_MAPPINGS: { patterns: RegExp[]; code: RoleCode }[] = [
+  // CTO patterns
+  {
+    patterns: [
+      /\bCTO\b/i,
+      /\bChief\s+Technology\s+Officer\b/i,
+      /\bChief\s+Tech\s+Officer\b/i,
+    ],
+    code: 'CTO',
+  },
+  // CFO patterns
+  {
+    patterns: [
+      /\bCFO\b/i,
+      /\bChief\s+Financial\s+Officer\b/i,
+      /\bChief\s+Finance\s+Officer\b/i,
+    ],
+    code: 'CFO',
+  },
+  // CIO patterns
+  {
+    patterns: [
+      /\bCIO\b/i,
+      /\bChief\s+Information\s+Officer\b/i,
+      /\bChief\s+Info\s+Officer\b/i,
+    ],
+    code: 'CIO',
+  },
+  // CISO patterns
+  {
+    patterns: [
+      /\bCISO\b/i,
+      /\bChief\s+Information\s+Security\s+Officer\b/i,
+      /\bChief\s+Security\s+Officer\b/i,
+    ],
+    code: 'CISO',
+  },
+  // COO patterns
+  {
+    patterns: [
+      /\bCOO\b/i,
+      /\bChief\s+Operating\s+Officer\b/i,
+      /\bChief\s+Operations\s+Officer\b/i,
+    ],
+    code: 'COO',
+  },
+  // VP Engineering patterns
+  {
+    patterns: [
+      /\bVP\s+(?:of\s+)?Engineering\b/i,
+      /\bVice\s+President\s+(?:of\s+)?Engineering\b/i,
+      /\bVP\s+Eng\b/i,
+    ],
+    code: 'VP_ENGINEERING',
+  },
+  // VP Technology patterns
+  {
+    patterns: [
+      /\bVP\s+(?:of\s+)?Technology\b/i,
+      /\bVice\s+President\s+(?:of\s+)?Technology\b/i,
+      /\bVP\s+Tech\b/i,
+    ],
+    code: 'VP_TECHNOLOGY',
+  },
+];
+
+/**
+ * Normalize a job title to a standard role code
+ *
+ * Examples:
+ *   "CTO Vacancy" -> "CTO"
+ *   "Chief Technology Officer" -> "CTO"
+ *   "VP of Engineering" -> "VP_ENGINEERING"
+ *   "CFO needed" -> "CFO"
+ *
+ * @param jobTitle - The job title to normalize
+ * @returns The normalized role code or null if no match
+ */
+export function normalizeRoleCode(jobTitle: string): RoleCode | null {
+  if (!jobTitle) return null;
+
+  for (const mapping of ROLE_MAPPINGS) {
+    for (const pattern of mapping.patterns) {
+      if (pattern.test(jobTitle)) {
+        return mapping.code;
+      }
+    }
+  }
+
+  return null;
+}
 
 interface TokenResponse {
   access_token: string;
@@ -198,6 +319,83 @@ export class PartnerConnectClientService {
     return resources.filter(r =>
       r.availabilityNext30 !== undefined && r.availabilityNext30 > 0
     );
+  }
+
+  // ============================================================================
+  // User Operations (for availability and role filtering)
+  // ============================================================================
+
+  /**
+   * Get all active users (partners with availability data)
+   * Uses the /users endpoint which has AvailabilityNext30/60/90 fields
+   */
+  private async getActiveUsers(): Promise<PCUserResponse[]> {
+    return this.request<PCUserResponse[]>('/users?active=true');
+  }
+
+  /**
+   * Transform a PascalCase user response to camelCase PartnerConnectResource
+   */
+  private transformUserToResource(user: PCUserResponse): PartnerConnectResource {
+    return {
+      uid: user.Uid,
+      displayName: user.DisplayName,
+      firstName: user.FirstName,
+      lastName: user.LastName,
+      primaryEmail: user.PrimaryEmail,
+      leadershipRoleCode: user.LeadershipRoleCode,
+      city: user.City,
+      state: user.State,
+      homeAreaCode: user.HomeAreaCode,
+      availabilityNext30: user.AvailabilityNext30,
+      availabilityNext60: user.AvailabilityNext60,
+      availabilityNext90: user.AvailabilityNext90,
+    };
+  }
+
+  /**
+   * Search partners by leadership role code
+   *
+   * @param roleCode - The role code to filter by (CTO, CFO, CIO, CISO, COO)
+   * @returns Array of resources matching the role
+   */
+  async searchPartnersByRole(roleCode: RoleCode): Promise<PartnerConnectResource[]> {
+    const users = await this.getActiveUsers();
+
+    // Filter by leadership role code
+    const matchingUsers = users.filter(
+      u => u.LeadershipRoleCode?.toUpperCase() === roleCode.toUpperCase()
+    );
+
+    return matchingUsers.map(u => this.transformUserToResource(u));
+  }
+
+  /**
+   * Get available partners by role
+   * Filters by role AND availability > 0, sorted by availability descending
+   *
+   * @param roleCode - The role code to filter by (CTO, CFO, CIO, CISO, COO)
+   * @returns Array of available resources matching the role, sorted by availability
+   */
+  async getAvailablePartnersByRole(roleCode: RoleCode): Promise<PartnerConnectResource[]> {
+    const users = await this.getActiveUsers();
+
+    // Filter by role and availability
+    const matchingUsers = users.filter(
+      u =>
+        u.LeadershipRoleCode?.toUpperCase() === roleCode.toUpperCase() &&
+        u.AvailabilityNext30 !== undefined &&
+        u.AvailabilityNext30 > 0
+    );
+
+    // Sort by availability descending (most available first)
+    matchingUsers.sort((a, b) => {
+      const availA = a.AvailabilityNext30 ?? 0;
+      const availB = b.AvailabilityNext30 ?? 0;
+      return availB - availA;
+    });
+
+    return matchingUsers.map(u => this.transformUserToResource(u));
   }
 
   // ============================================================================
