@@ -605,7 +605,7 @@ export class RecommendationEngine {
   }
 
   /**
-   * Generate human-readable summary with enhanced format
+   * Generate human-readable summary with HTML format for HubSpot
    */
   private generateSummary(
     context: OpportunityContext,
@@ -614,19 +614,18 @@ export class RecommendationEngine {
     availablePartners: AvailablePartner[],
     similarDeals: SimilarDeal[]
   ): string {
-    const lines: string[] = [];
+    const parts: string[] = [];
     const role = context.functionalRole || context.jobTitle;
 
     // Header
-    lines.push(`## ${role.toUpperCase()} OPPORTUNITY: ${context.company.name.toUpperCase()}`);
-    lines.push('');
+    parts.push(`<h2>${role.toUpperCase()} OPPORTUNITY: ${context.company.name.toUpperCase()}</h2>`);
 
-    // Company info line
+    // Company info
     const industryPart = context.company.industry || 'Unknown industry';
     const pePart = context.peFirms.length > 0
       ? `PE-backed (${context.peFirms.join(', ')})`
       : context.company.ownership || 'Unknown ownership';
-    lines.push(`**Company:** ${industryPart} | ${pePart}`);
+    parts.push(`<p><strong>Company:</strong> ${industryPart} | ${pePart}</p>`);
 
     // Engagement type
     const engagementLabels: Record<EngagementType, string> = {
@@ -635,84 +634,82 @@ export class RecommendationEngine {
       interim_to_perm: 'Interim-to-Perm',
       project: 'Project-Based',
     };
-    lines.push(`**Engagement Type:** Likely ${engagementLabels[context.engagementType || 'project']}`);
-    lines.push('');
+    parts.push(`<p><strong>Engagement Type:</strong> Likely ${engagementLabels[context.engagementType || 'project']}</p>`);
 
     // WHY WE CAN WIN section
-    lines.push('### WHY WE CAN WIN');
+    parts.push('<h3>WHY WE CAN WIN</h3>');
+    parts.push('<ul>');
 
     // PE Portfolio Match
     const peConnection = connections.find(c => c.type === 'pe_relationship');
     if (peConnection && context.peFirms.length > 0) {
-      lines.push(`- **PE Portfolio Match:** ${peConnection.evidence}`);
+      parts.push(`<li><strong>PE Portfolio Match:</strong> ${peConnection.evidence}</li>`);
     }
 
     // Functional Fit
     const functionalConnection = connections.find(c => c.type === 'functional_match');
     if (functionalConnection) {
-      lines.push(`- **Functional Fit:** ${functionalConnection.evidence}`);
+      parts.push(`<li><strong>Functional Fit:</strong> ${functionalConnection.evidence}</li>`);
     }
 
     // Similar Wins
     if (similarDeals.length > 0) {
       const practice = this.mapRoleToPractice(role) || role;
-      lines.push(`- **Similar Wins:** ${similarDeals.length} ${practice} placements in past 12mo`);
+      parts.push(`<li><strong>Similar Wins:</strong> ${similarDeals.length} ${practice} placements in past 12mo</li>`);
     }
 
     // Past client
     const pastClientConnection = connections.find(c => c.type === 'past_client');
     if (pastClientConnection) {
-      lines.push(`- **Past Client:** ${pastClientConnection.evidence}`);
+      parts.push(`<li><strong>Past Client:</strong> ${pastClientConnection.evidence}</li>`);
     }
 
     // Partner experience
     const partnerExpConnection = connections.find(c => c.type === 'partner_experience');
     if (partnerExpConnection) {
-      lines.push(`- **Partner Experience:** ${partnerExpConnection.evidence}`);
+      parts.push(`<li><strong>Partner Experience:</strong> ${partnerExpConnection.evidence}</li>`);
     }
 
     // If no connections, note cold outreach
     if (connections.length === 0) {
-      lines.push('- *No existing connections - cold outreach required*');
+      parts.push('<li><em>No existing connections - cold outreach required</em></li>');
     }
 
-    lines.push('');
+    parts.push('</ul>');
 
     // RECOMMENDED PARTNERS section
     if (availablePartners.length > 0) {
-      lines.push('### RECOMMENDED PARTNERS (with availability)');
+      parts.push('<h3>RECOMMENDED PARTNERS</h3>');
+      parts.push('<ol>');
       for (const partner of availablePartners.slice(0, 3)) {
         const availabilityPct = partner.availabilityNext30;
-        lines.push(`1. **${partner.name}** - ${partner.role}, ${availabilityPct}% available next 30 days`);
+        parts.push(`<li><strong>${partner.name}</strong> - ${partner.role}, ${availabilityPct}% available next 30 days</li>`);
       }
-      lines.push('');
+      parts.push('</ol>');
     }
 
     // PE CONTACTS TO APPROACH section
     if (contacts.length > 0) {
-      lines.push('### PE CONTACTS TO APPROACH');
+      parts.push('<h3>PE CONTACTS TO APPROACH</h3>');
+      parts.push('<ol>');
       for (const rec of contacts.slice(0, 3)) {
         const c = rec.contact;
-        lines.push(`1. **${c.name}** (${c.title} @ ${c.organization})`);
-        lines.push(`   - Approach: ${this.formatApproach(rec.approach)}`);
-        if (rec.conversationOpener) {
-          lines.push(`   - Opener: "${rec.conversationOpener}"`);
-        }
+        parts.push(`<li><strong>${c.name}</strong> (${c.title} @ ${c.organization})<br/>`);
+        parts.push(`<em>Approach:</em> ${this.formatApproach(rec.approach)}</li>`);
       }
-      lines.push('');
+      parts.push('</ol>');
     }
 
     // ROCK SOLID OFFER section
-    lines.push('### ROCK SOLID OFFER');
+    parts.push('<h3>ROCK SOLID OFFER</h3>');
     const offer = this.generateRockSolidOffer(context, connections, availablePartners, similarDeals);
-    lines.push(`"${offer}"`);
-    lines.push('');
+    parts.push(`<blockquote>"${offer}"</blockquote>`);
 
     // Footer
-    lines.push('---');
-    lines.push(`*Generated by Lead5 Scout | ${new Date().toLocaleDateString()}*`);
+    parts.push('<hr/>');
+    parts.push(`<p><em>Generated by Lead5 Scout | ${new Date().toLocaleDateString()}</em></p>`);
 
-    return lines.join('\n');
+    return parts.join('\n');
   }
 
   /**
