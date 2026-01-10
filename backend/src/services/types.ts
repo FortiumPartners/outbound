@@ -135,6 +135,15 @@ export interface ContactRecommendation {
 // Strategic Recommendation (full output)
 // ============================================================================
 
+// Company contact from HubSpot (at the target company)
+export interface CompanyContact {
+  id: string;
+  name: string;
+  title?: string;
+  email?: string;
+  company: string;
+}
+
 export interface StrategicRecommendation {
   opportunityId: string;
   companyName: string;
@@ -148,6 +157,7 @@ export interface StrategicRecommendation {
   engagementType?: EngagementType;
   availablePartners: AvailablePartner[];  // Partners with matching role + availability
   similarDeals: SimilarDeal[];            // Recent closed-won deals in same practice
+  companyContacts: CompanyContact[];       // Existing contacts at the target company
 
   // Prioritized recommendations
   contactRecommendations: ContactRecommendation[];

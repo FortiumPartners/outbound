@@ -372,6 +372,25 @@ export class HubSpotClient {
   }
 
   /**
+   * Get full contact details for all contacts associated with a company
+   */
+  async getCompanyContactDetails(companyId: string): Promise<HubSpotContact[]> {
+    const associations = await this.getCompanyContacts(companyId);
+    const contacts: HubSpotContact[] = [];
+
+    for (const assoc of associations.slice(0, 10)) { // Limit to 10 contacts
+      try {
+        const contact = await this.getContact(assoc.id);
+        contacts.push(contact);
+      } catch {
+        // Skip contacts we can't fetch
+      }
+    }
+
+    return contacts;
+  }
+
+  /**
    * Get companies associated with a deal
    */
   async getDealCompanies(dealId: string): Promise<HubSpotAssociation[]> {

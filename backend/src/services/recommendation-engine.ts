@@ -26,6 +26,7 @@ import {
   AvailablePartner,
   SimilarDeal,
   EngagementType,
+  CompanyContact,
   SCORING_WEIGHTS,
 } from './types.js';
 
@@ -73,16 +74,19 @@ export class RecommendationEngine {
     // Step 5: Get similar deals for framing
     const similarDeals = await this.getSimilarDeals(context);
 
-    // Step 6: Score and prioritize contacts
+    // Step 6: Get existing company contacts from HubSpot
+    const companyContacts = await this.getCompanyContacts(context.company.name);
+
+    // Step 7: Score and prioritize contacts
     const contactRecommendations = await this.prioritizeContacts(context, connections);
 
-    // Step 7: Calculate overall score
+    // Step 8: Calculate overall score
     const overallScore = this.calculateOverallScore(connections, contactRecommendations);
 
-    // Step 8: Generate summary with new format
-    const summary = this.generateSummary(context, connections, contactRecommendations, availablePartners, similarDeals);
+    // Step 9: Generate summary with new format
+    const summary = this.generateSummary(context, connections, contactRecommendations, availablePartners, similarDeals, companyContacts);
 
-    // Step 9: Generate Claude conversation openers for top contacts
+    // Step 10: Generate Claude conversation openers for top contacts
     if (this.anthropic && contactRecommendations.length > 0) {
       await this.generateConversationOpeners(context, connections, contactRecommendations);
     }
@@ -96,6 +100,7 @@ export class RecommendationEngine {
       engagementType,
       availablePartners,
       similarDeals,
+      companyContacts,
       contactRecommendations,
       summary,
       generatedAt: new Date(),
@@ -171,6 +176,33 @@ export class RecommendationEngine {
       return await this.hubspot.searchSimilarDeals({ practice, monthsBack: 12 });
     } catch (e) {
       console.warn('Failed to get similar deals:', e);
+      return [];
+    }
+  }
+
+  /**
+   * Get existing contacts at the target company from HubSpot
+   */
+  private async getCompanyContacts(companyName: string): Promise<CompanyContact[]> {
+    try {
+      // First find the company in HubSpot
+      const companies = await this.hubspot.searchCompanies(companyName, 1);
+      if (companies.length === 0) {
+        return [];
+      }
+
+      const company = companies[0];
+      const contacts = await this.hubspot.getCompanyContactDetails(company.id);
+
+      return contacts.map(c => ({
+        id: c.id,
+        name: [c.properties.firstname, c.properties.lastname].filter(Boolean).join(' ') || 'Unknown',
+        title: c.properties.jobtitle,
+        email: c.properties.email,
+        company: companyName,
+      }));
+    } catch (e) {
+      console.warn(`Failed to get company contacts for ${companyName}:`, e);
       return [];
     }
   }
@@ -612,7 +644,8 @@ export class RecommendationEngine {
     connections: Connection[],
     contacts: ContactRecommendation[],
     availablePartners: AvailablePartner[],
-    similarDeals: SimilarDeal[]
+    similarDeals: SimilarDeal[],
+    companyContacts: CompanyContact[] = []
   ): string {
     const parts: string[] = [];
     const role = context.functionalRole || context.jobTitle;
@@ -696,6 +729,18 @@ export class RecommendationEngine {
         const c = rec.contact;
         parts.push(`<li><strong>${c.name}</strong> (${c.title} @ ${c.organization})<br/>`);
         parts.push(`<em>Approach:</em> ${this.formatApproach(rec.approach)}</li>`);
+      }
+      parts.push('</ol>');
+    }
+
+    // COMPANY CONTACTS section (existing contacts at the target company)
+    if (companyContacts.length > 0) {
+      parts.push('<h3>COMPANY CONTACTS</h3>');
+      parts.push('<ol>');
+      for (const contact of companyContacts.slice(0, 5)) {
+        const titlePart = contact.title ? ` - ${contact.title}` : '';
+        const emailPart = contact.email ? ` (${contact.email})` : '';
+        parts.push(`<li><strong>${contact.name}</strong>${titlePart}${emailPart}</li>`);
       }
       parts.push('</ol>');
     }
