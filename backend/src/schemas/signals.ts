@@ -1,5 +1,17 @@
 import { z } from 'zod';
 
+export const signalStatusEnum = z.enum(['pending', 'ready', 'pushed', 'push_failed', 'archived']);
+export type SignalStatus = z.infer<typeof signalStatusEnum>;
+
+export const archiveReasonEnum = z.enum([
+  'not_relevant',
+  'already_have_relationship',
+  'company_too_small',
+  'not_pe_backed',
+  'other'
+]);
+export type ArchiveReason = z.infer<typeof archiveReasonEnum>;
+
 export const signalTypeEnum = z.enum([
   'job_posting',
   'job_change',
@@ -46,6 +58,18 @@ export const signalResponseSchema = z.object({
   summary: z.string().nullable(),
   processedAt: z.string().datetime().nullable(),
   hypothesisCount: z.number(),
+  // Staged workflow fields
+  status: signalStatusEnum,
+  recommendation: z.unknown().nullable(),
+  // HubSpot sync tracking
+  hubspotDealId: z.string().nullable(),
+  hubspotCompanyIds: z.array(z.string()).nullable(),
+  hubspotContactIds: z.array(z.string()).nullable(),
+  pushedAt: z.string().datetime().nullable(),
+  pushError: z.string().nullable(),
+  // Archive tracking
+  archivedAt: z.string().datetime().nullable(),
+  archiveReason: z.string().nullable(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
 });
