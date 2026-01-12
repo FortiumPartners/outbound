@@ -5,6 +5,7 @@ import {
   createSignalSchema,
   updateSignalSchema,
   signalResponseSchema,
+  signalStatusEnum,
   archiveReasonEnum,
   CreateSignal,
   UpdateSignal,
@@ -21,6 +22,8 @@ export const signalRoutes: FastifyPluginAsync = async (fastify) => {
         contactId: z.string().uuid().optional(),
         type: z.string().optional(),
         severity: z.string().optional(),
+        status: signalStatusEnum.optional(),
+        source: z.string().optional(),
       }),
       response: {
         200: z.object({
@@ -34,13 +37,15 @@ export const signalRoutes: FastifyPluginAsync = async (fastify) => {
       },
     },
   }, async (request) => {
-    const { page, limit, accountId, contactId, type, severity } = request.query as {
+    const { page, limit, accountId, contactId, type, severity, status, source } = request.query as {
       page: number;
       limit: number;
       accountId?: string;
       contactId?: string;
       type?: string;
       severity?: string;
+      status?: string;
+      source?: string;
     };
     const skip = (page - 1) * limit;
 
@@ -49,6 +54,8 @@ export const signalRoutes: FastifyPluginAsync = async (fastify) => {
     if (contactId) where.contactId = contactId;
     if (type) where.type = type;
     if (severity) where.severity = severity;
+    if (status) where.status = status;
+    if (source) where.source = source;
 
     const [signals, total] = await Promise.all([
       prisma.signal.findMany({
@@ -64,6 +71,18 @@ export const signalRoutes: FastifyPluginAsync = async (fastify) => {
       data: signals.map(s => ({
         ...s,
         processedAt: s.processedAt?.toISOString() ?? null,
+        // Staged workflow fields
+        status: s.status,
+        recommendation: s.recommendation,
+        // HubSpot sync tracking
+        hubspotDealId: s.hubspotDealId,
+        hubspotCompanyIds: s.hubspotCompanyIds as string[] | null,
+        hubspotContactIds: s.hubspotContactIds as string[] | null,
+        pushedAt: s.pushedAt?.toISOString() ?? null,
+        pushError: s.pushError,
+        // Archive tracking
+        archivedAt: s.archivedAt?.toISOString() ?? null,
+        archiveReason: s.archiveReason,
         createdAt: s.createdAt.toISOString(),
         updatedAt: s.updatedAt.toISOString(),
       })),
@@ -91,6 +110,18 @@ export const signalRoutes: FastifyPluginAsync = async (fastify) => {
     return {
       ...signal,
       processedAt: signal.processedAt?.toISOString() ?? null,
+      // Staged workflow fields
+      status: signal.status,
+      recommendation: signal.recommendation,
+      // HubSpot sync tracking
+      hubspotDealId: signal.hubspotDealId,
+      hubspotCompanyIds: signal.hubspotCompanyIds as string[] | null,
+      hubspotContactIds: signal.hubspotContactIds as string[] | null,
+      pushedAt: signal.pushedAt?.toISOString() ?? null,
+      pushError: signal.pushError,
+      // Archive tracking
+      archivedAt: signal.archivedAt?.toISOString() ?? null,
+      archiveReason: signal.archiveReason,
       createdAt: signal.createdAt.toISOString(),
       updatedAt: signal.updatedAt.toISOString(),
     };
@@ -120,6 +151,18 @@ export const signalRoutes: FastifyPluginAsync = async (fastify) => {
     return reply.status(201).send({
       ...signal,
       processedAt: signal.processedAt?.toISOString() ?? null,
+      // Staged workflow fields
+      status: signal.status,
+      recommendation: signal.recommendation,
+      // HubSpot sync tracking
+      hubspotDealId: signal.hubspotDealId,
+      hubspotCompanyIds: signal.hubspotCompanyIds as string[] | null,
+      hubspotContactIds: signal.hubspotContactIds as string[] | null,
+      pushedAt: signal.pushedAt?.toISOString() ?? null,
+      pushError: signal.pushError,
+      // Archive tracking
+      archivedAt: signal.archivedAt?.toISOString() ?? null,
+      archiveReason: signal.archiveReason,
       createdAt: signal.createdAt.toISOString(),
       updatedAt: signal.updatedAt.toISOString(),
     });
@@ -153,6 +196,18 @@ export const signalRoutes: FastifyPluginAsync = async (fastify) => {
       return {
         ...signal,
         processedAt: signal.processedAt?.toISOString() ?? null,
+        // Staged workflow fields
+        status: signal.status,
+        recommendation: signal.recommendation,
+        // HubSpot sync tracking
+        hubspotDealId: signal.hubspotDealId,
+        hubspotCompanyIds: signal.hubspotCompanyIds as string[] | null,
+        hubspotContactIds: signal.hubspotContactIds as string[] | null,
+        pushedAt: signal.pushedAt?.toISOString() ?? null,
+        pushError: signal.pushError,
+        // Archive tracking
+        archivedAt: signal.archivedAt?.toISOString() ?? null,
+        archiveReason: signal.archiveReason,
         createdAt: signal.createdAt.toISOString(),
         updatedAt: signal.updatedAt.toISOString(),
       };
