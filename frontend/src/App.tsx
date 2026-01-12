@@ -631,15 +631,68 @@ function SignalCard({ signal, isExpanded, onToggle }: {
 
 function SignalsPage() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [statusFilter, setStatusFilter] = useState<string>('ready');
+  const [sourceFilter, setSourceFilter] = useState<string>('');
 
+  // Fetch signals with filters
   const { data, isLoading } = useQuery({
-    queryKey: ['signals'],
+    queryKey: ['signals', statusFilter, sourceFilter],
     queryFn: async () => {
-      const res = await fetch(`${API_URL}/api/v1/signals?limit=50`);
+      const params = new URLSearchParams();
+      params.set('limit', '50');
+      if (statusFilter) params.set('status', statusFilter);
+      if (sourceFilter) params.set('source', sourceFilter);
+
+      const res = await fetch(`${API_URL}/api/v1/signals?${params}`);
       if (!res.ok) throw new Error('Failed to fetch');
       return res.json();
     },
   });
+
+  // Fetch counts for each status (separate queries for tab badges)
+  const { data: readyData } = useQuery({
+    queryKey: ['signals', 'count', 'ready'],
+    queryFn: async () => {
+      const res = await fetch(`${API_URL}/api/v1/signals?status=ready&limit=1`);
+      if (!res.ok) throw new Error('Failed to fetch');
+      return res.json();
+    },
+  });
+
+  const { data: pushedData } = useQuery({
+    queryKey: ['signals', 'count', 'pushed'],
+    queryFn: async () => {
+      const res = await fetch(`${API_URL}/api/v1/signals?status=pushed&limit=1`);
+      if (!res.ok) throw new Error('Failed to fetch');
+      return res.json();
+    },
+  });
+
+  const { data: failedData } = useQuery({
+    queryKey: ['signals', 'count', 'push_failed'],
+    queryFn: async () => {
+      const res = await fetch(`${API_URL}/api/v1/signals?status=push_failed&limit=1`);
+      if (!res.ok) throw new Error('Failed to fetch');
+      return res.json();
+    },
+  });
+
+  const { data: archivedData } = useQuery({
+    queryKey: ['signals', 'count', 'archived'],
+    queryFn: async () => {
+      const res = await fetch(`${API_URL}/api/v1/signals?status=archived&limit=1`);
+      if (!res.ok) throw new Error('Failed to fetch');
+      return res.json();
+    },
+  });
+
+  // Status tabs configuration
+  const statusTabs = [
+    { value: 'ready', label: 'Ready', count: readyData?.pagination?.total ?? 0 },
+    { value: 'pushed', label: 'Pushed', count: pushedData?.pagination?.total ?? 0 },
+    { value: 'push_failed', label: 'Failed', count: failedData?.pagination?.total ?? 0 },
+    { value: 'archived', label: 'Archived', count: archivedData?.pagination?.total ?? 0 },
+  ];
 
   const toggleExpand = (id: string) => {
     setExpandedId(expandedId === id ? null : id);
@@ -649,13 +702,58 @@ function SignalsPage() {
 
   return (
     <div>
-      <h2 className="text-2xl font-bold mb-6">Signals</h2>
+      <div className="flex items-center justify-between mb-6">
+        <h2 className="text-2xl font-bold">Signals</h2>
+
+        {/* Source filter dropdown */}
+        <div className="flex items-center gap-2">
+          <label htmlFor="source-filter" className="text-sm text-muted-foreground">Source:</label>
+          <select
+            id="source-filter"
+            value={sourceFilter}
+            onChange={(e) => setSourceFilter(e.target.value)}
+            className="px-3 py-1.5 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          >
+            <option value="">All sources</option>
+            <option value="lead5">Lead5</option>
+          </select>
+        </div>
+      </div>
+
+      {/* Status filter tabs */}
+      <div className="flex border-b mb-6">
+        {statusTabs.map((tab) => (
+          <button
+            key={tab.value}
+            onClick={() => setStatusFilter(tab.value)}
+            className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
+              statusFilter === tab.value
+                ? 'border-primary text-primary'
+                : 'border-transparent text-muted-foreground hover:text-foreground hover:border-muted-foreground/50'
+            }`}
+          >
+            {tab.label}
+            <span className={`ml-2 px-2 py-0.5 rounded-full text-xs ${
+              statusFilter === tab.value
+                ? 'bg-primary/10 text-primary'
+                : 'bg-muted text-muted-foreground'
+            }`}>
+              {tab.count}
+            </span>
+          </button>
+        ))}
+      </div>
+
       {isLoading ? (
         <p className="text-muted-foreground">Loading...</p>
       ) : !signals || signals.length === 0 ? (
         <div className="rounded-lg border bg-card p-8 text-center">
           <Zap className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
-          <p className="text-muted-foreground">No signals detected yet</p>
+          <p className="text-muted-foreground">
+            {statusFilter
+              ? `No ${statusLabels[statusFilter]?.toLowerCase() || statusFilter} signals`
+              : 'No signals detected yet'}
+          </p>
         </div>
       ) : (
         <div className="grid gap-4">
