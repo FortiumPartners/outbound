@@ -5,9 +5,11 @@ import {
   createSignalSchema,
   updateSignalSchema,
   signalResponseSchema,
+  archiveReasonEnum,
   CreateSignal,
   UpdateSignal,
 } from '../schemas/signals.js';
+import { pushSignalToHubSpot } from '../services/hubspot-push.js';
 import { z } from 'zod';
 
 export const signalRoutes: FastifyPluginAsync = async (fastify) => {
@@ -170,6 +172,124 @@ export const signalRoutes: FastifyPluginAsync = async (fastify) => {
     try {
       await prisma.signal.delete({ where: { id } });
       return reply.status(204).send();
+    } catch {
+      return reply.status(404).send({ error: 'Not Found', message: 'Signal not found', statusCode: 404 });
+    }
+  });
+
+  // Push signal to HubSpot
+  fastify.post('/:id/push', {
+    schema: {
+      params: idParamSchema,
+      response: {
+        200: z.object({
+          success: z.boolean(),
+          hubspot: z.object({
+            dealId: z.string(),
+            dealUrl: z.string(),
+            companiesCreated: z.number(),
+            companyContactsCreated: z.number(),
+            peContactsCreated: z.number(),
+          }),
+        }),
+        400: z.object({ error: z.string(), message: z.string(), statusCode: z.number() }),
+        404: z.object({ error: z.string(), message: z.string(), statusCode: z.number() }),
+        500: z.object({ error: z.string(), message: z.string(), statusCode: z.number() }),
+      },
+    },
+  }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+
+    const signal = await prisma.signal.findUnique({ where: { id } });
+    if (!signal) {
+      return reply.status(404).send({ error: 'Not Found', message: 'Signal not found', statusCode: 404 });
+    }
+
+    if (signal.status === 'pushed') {
+      return reply.status(400).send({ error: 'Bad Request', message: 'Signal already pushed to HubSpot', statusCode: 400 });
+    }
+
+    if (signal.status === 'archived') {
+      return reply.status(400).send({ error: 'Bad Request', message: 'Cannot push archived signal', statusCode: 400 });
+    }
+
+    try {
+      const result = await pushSignalToHubSpot(signal);
+
+      await prisma.signal.update({
+        where: { id },
+        data: {
+          status: 'pushed',
+          hubspotDealId: result.dealId,
+          hubspotCompanyIds: result.companyIds,
+          hubspotContactIds: result.contactIds,
+          pushedAt: new Date(),
+          pushError: null,
+        },
+      });
+
+      return {
+        success: true,
+        hubspot: {
+          dealId: result.dealId,
+          dealUrl: result.dealUrl,
+          companiesCreated: result.companiesCreated,
+          companyContactsCreated: result.companyContactsCreated,
+          peContactsCreated: result.peContactsCreated,
+        },
+      };
+    } catch (error) {
+      // Store error for retry capability
+      await prisma.signal.update({
+        where: { id },
+        data: {
+          status: 'push_failed',
+          pushError: error instanceof Error ? error.message : 'Unknown error',
+        },
+      });
+
+      return reply.status(500).send({
+        error: 'Push Failed',
+        message: error instanceof Error ? error.message : 'Failed to push to HubSpot',
+        statusCode: 500,
+      });
+    }
+  });
+
+  // Archive signal
+  fastify.post('/:id/archive', {
+    schema: {
+      params: idParamSchema,
+      body: z.object({
+        reason: archiveReasonEnum.optional(),
+      }).nullish(),
+      response: {
+        200: signalResponseSchema,
+        404: z.object({ error: z.string(), message: z.string(), statusCode: z.number() }),
+      },
+    },
+  }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const body = (request.body ?? {}) as { reason?: string };
+
+    try {
+      const signal = await prisma.signal.update({
+        where: { id },
+        data: {
+          status: 'archived',
+          archivedAt: new Date(),
+          archiveReason: body?.reason || null,
+        },
+      });
+
+      return {
+        ...signal,
+        processedAt: signal.processedAt?.toISOString() ?? null,
+        pushedAt: signal.pushedAt?.toISOString() ?? null,
+        archivedAt: signal.archivedAt?.toISOString() ?? null,
+        createdAt: signal.createdAt.toISOString(),
+        updatedAt: signal.updatedAt.toISOString(),
+      };
     } catch {
       return reply.status(404).send({ error: 'Not Found', message: 'Signal not found', statusCode: 404 });
     }
