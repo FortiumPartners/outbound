@@ -207,7 +207,6 @@ export async function pushSignalToHubSpot(signal: Signal): Promise<PushResult> {
 
   const dealId = await client.createDeal(dealName, {
     source_details: 'Lead5 Scout',
-    signal_id: signal.id,
     dealstage: 'appointmentscheduled', // Default to first stage
   });
 

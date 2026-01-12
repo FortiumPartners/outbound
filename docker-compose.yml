@@ -14,7 +14,9 @@ services:
       - PORT=8000
       - HOST=0.0.0.0
       - LOG_LEVEL=debug
-      - DATABASE_URL=postgresql://outbound:outbound@host.docker.internal:5432/outbound
+      - DATABASE_URL=postgresql://fortium_render_production_postgres_user:qUoIQ7rLsDBEDEu7kZwfKHyuIXIXyCXC@dpg-d5dcfmqli9vc73dfrfvg-a.oregon-postgres.render.com/outbound
+      - HUBSPOT_ACCESS_TOKEN=${HUBSPOT_ACCESS_TOKEN}
+      - HUBSPOT_PORTAL_ID=${HUBSPOT_PORTAL_ID:-48750181}
     volumes:
       - ./backend:/app:delegated
       - /app/node_modules
