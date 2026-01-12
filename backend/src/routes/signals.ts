@@ -11,6 +11,7 @@ import {
   UpdateSignal,
 } from '../schemas/signals.js';
 import { pushSignalToHubSpot } from '../services/hubspot-push.js';
+import { enrichSignal } from '../services/enrichment-worker.js';
 import { z } from 'zod';
 
 export const signalRoutes: FastifyPluginAsync = async (fastify) => {
@@ -146,6 +147,11 @@ export const signalRoutes: FastifyPluginAsync = async (fastify) => {
         accountId: undefined,
         contactId: undefined,
       } as Parameters<typeof prisma.signal.create>[0]['data'],
+    });
+
+    // Trigger async enrichment (don't await - return immediately)
+    enrichSignal(signal.id).catch((err) => {
+      console.error('[signals] Background enrichment failed:', err);
     });
 
     return reply.status(201).send({
