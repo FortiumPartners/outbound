@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Routes, Route, Link, useLocation } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
-import { Building2, Users, Zap, Lightbulb, LayoutDashboard, ChevronDown, ChevronUp, MapPin, Briefcase, User, ExternalLink } from 'lucide-react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { Building2, Users, Zap, Lightbulb, LayoutDashboard, ChevronDown, ChevronUp, MapPin, Briefcase, User, ExternalLink, X, CheckCircle } from 'lucide-react';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8004';
 
@@ -93,6 +93,27 @@ interface Signal {
   archiveReason: string | null;
   createdAt: string;
 }
+
+// Push result type from API
+interface PushResult {
+  success: boolean;
+  hubspot: {
+    dealId: string;
+    dealUrl: string;
+    companiesCreated: number;
+    companyContactsCreated: number;
+    peContactsCreated: number;
+  };
+}
+
+// Archive reason options
+const archiveReasons = [
+  { value: 'not_relevant', label: 'Not relevant to our practice' },
+  { value: 'already_have_relationship', label: 'Already have relationship' },
+  { value: 'company_too_small', label: 'Company too small' },
+  { value: 'not_pe_backed', label: 'Not PE-backed' },
+  { value: 'other', label: 'Other' },
+];
 
 // Status colors for the status dot
 const statusColors: Record<string, string> = {
@@ -359,11 +380,164 @@ function ContactsPage() {
   );
 }
 
+// PushSuccessModal Component - Shows success after pushing to HubSpot
+function PushSuccessModal({
+  result,
+  signalSummary,
+  onClose
+}: {
+  result: PushResult;
+  signalSummary: string;
+  onClose: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+      <div className="bg-card border rounded-lg shadow-lg w-full max-w-md p-6 m-4">
+        {/* Header */}
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-2 text-green-600">
+            <CheckCircle className="h-6 w-6" />
+            <h3 className="text-lg font-semibold">Pushed to HubSpot</h3>
+          </div>
+          <button
+            onClick={onClose}
+            className="text-muted-foreground hover:text-foreground"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        {/* Created objects summary */}
+        <div className="space-y-2 mb-6">
+          <p className="text-sm text-muted-foreground mb-3">Created:</p>
+          <ul className="space-y-2 text-sm">
+            <li className="flex items-center gap-2">
+              <span className="text-green-600">*</span>
+              <span>1 Deal: "{signalSummary}"</span>
+            </li>
+            <li className="flex items-center gap-2">
+              <span className="text-green-600">*</span>
+              <span>{result.hubspot.companiesCreated} {result.hubspot.companiesCreated === 1 ? 'Company' : 'Companies'}</span>
+            </li>
+            <li className="flex items-center gap-2">
+              <span className="text-green-600">*</span>
+              <span>{result.hubspot.companyContactsCreated} Company contact{result.hubspot.companyContactsCreated !== 1 ? 's' : ''} (buyers)</span>
+            </li>
+            <li className="flex items-center gap-2">
+              <span className="text-green-600">*</span>
+              <span>{result.hubspot.peContactsCreated} PE contact{result.hubspot.peContactsCreated !== 1 ? 's' : ''} (influencers)</span>
+            </li>
+          </ul>
+        </div>
+
+        {/* Action buttons */}
+        <div className="flex gap-3 justify-end">
+          <a
+            href={result.hubspot.dealUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm font-medium hover:bg-primary/90 inline-flex items-center gap-1"
+          >
+            <ExternalLink className="h-4 w-4" />
+            View in HubSpot
+          </a>
+          <button
+            onClick={onClose}
+            className="px-4 py-2 border border-input bg-background rounded-md text-sm font-medium hover:bg-muted"
+          >
+            Done
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ArchiveModal Component - Confirmation dialog with reason selection
+function ArchiveModal({
+  signalSummary,
+  onConfirm,
+  onCancel,
+  isPending
+}: {
+  signalSummary: string;
+  onConfirm: (reason?: string) => void;
+  onCancel: () => void;
+  isPending: boolean;
+}) {
+  const [selectedReason, setSelectedReason] = useState<string>('');
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+      <div className="bg-card border rounded-lg shadow-lg w-full max-w-md p-6 m-4">
+        {/* Header */}
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-lg font-semibold">Archive this signal?</h3>
+          <button
+            onClick={onCancel}
+            className="text-muted-foreground hover:text-foreground"
+            disabled={isPending}
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        {/* Signal summary */}
+        <p className="text-sm text-muted-foreground mb-4">
+          {signalSummary}
+        </p>
+
+        {/* Reason dropdown */}
+        <div className="mb-6">
+          <label htmlFor="archive-reason" className="block text-sm font-medium mb-2">
+            Reason (optional):
+          </label>
+          <select
+            id="archive-reason"
+            value={selectedReason}
+            onChange={(e) => setSelectedReason(e.target.value)}
+            className="w-full px-3 py-2 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            disabled={isPending}
+          >
+            <option value="">Select reason...</option>
+            {archiveReasons.map((reason) => (
+              <option key={reason.value} value={reason.value}>
+                {reason.label}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {/* Action buttons */}
+        <div className="flex gap-3 justify-end">
+          <button
+            onClick={onCancel}
+            className="px-4 py-2 border border-input bg-background rounded-md text-sm font-medium hover:bg-muted"
+            disabled={isPending}
+          >
+            Cancel
+          </button>
+          <button
+            onClick={() => onConfirm(selectedReason || undefined)}
+            className="px-4 py-2 bg-destructive text-destructive-foreground rounded-md text-sm font-medium hover:bg-destructive/90 disabled:opacity-50"
+            disabled={isPending}
+          >
+            {isPending ? 'Archiving...' : 'Archive'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // SignalCard Component - Expandable card for displaying signal details
-function SignalCard({ signal, isExpanded, onToggle }: {
+function SignalCard({ signal, isExpanded, onToggle, onPush, onArchive, isPushPending }: {
   signal: Signal;
   isExpanded: boolean;
   onToggle: () => void;
+  onPush: () => void;
+  onArchive: () => void;
+  isPushPending: boolean;
 }) {
   const payload = signal.rawPayload;
   const rec = signal.recommendation;
@@ -608,15 +782,17 @@ function SignalCard({ signal, isExpanded, onToggle }: {
             </div>
           )}
 
-          {/* Action Buttons - Placeholder for Task 11 */}
+          {/* Action Buttons */}
           <div className="flex gap-3 pt-4 border-t">
             <button
+              onClick={onPush}
               className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm font-medium hover:bg-primary/90 disabled:opacity-50"
-              disabled={signal.status === 'pushed' || signal.status === 'archived'}
+              disabled={signal.status === 'pushed' || signal.status === 'archived' || isPushPending}
             >
-              Push to HubSpot
+              {isPushPending ? 'Pushing...' : 'Push to HubSpot'}
             </button>
             <button
+              onClick={onArchive}
               className="px-4 py-2 border border-input bg-background rounded-md text-sm font-medium hover:bg-muted disabled:opacity-50"
               disabled={signal.status === 'archived'}
             >
@@ -630,9 +806,61 @@ function SignalCard({ signal, isExpanded, onToggle }: {
 }
 
 function SignalsPage() {
+  const queryClient = useQueryClient();
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<string>('ready');
   const [sourceFilter, setSourceFilter] = useState<string>('');
+
+  // Modal state
+  const [pushResult, setPushResult] = useState<{ result: PushResult; signalSummary: string } | null>(null);
+  const [showArchiveModal, setShowArchiveModal] = useState<{ signalId: string; signalSummary: string } | null>(null);
+
+  // Push mutation
+  const pushMutation = useMutation({
+    mutationFn: async (signalId: string) => {
+      const res = await fetch(`${API_URL}/api/v1/signals/${signalId}/push`, {
+        method: 'POST',
+      });
+      if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.message || 'Failed to push to HubSpot');
+      }
+      return res.json() as Promise<PushResult>;
+    },
+    onSuccess: (data, signalId) => {
+      // Find the signal to get its summary for the modal
+      const signal = signals?.find(s => s.id === signalId);
+      const payload = signal?.rawPayload;
+      const companyName = payload?.companyName || payload?.company || 'Unknown Company';
+      const jobTitle = payload?.jobTitle || signal?.summary || 'Unknown Position';
+      const signalSummary = `${jobTitle} at ${companyName}`;
+
+      setPushResult({ result: data, signalSummary });
+      // Invalidate all signals queries to refresh data and counts
+      queryClient.invalidateQueries({ queryKey: ['signals'] });
+    },
+  });
+
+  // Archive mutation
+  const archiveMutation = useMutation({
+    mutationFn: async ({ signalId, reason }: { signalId: string; reason?: string }) => {
+      const res = await fetch(`${API_URL}/api/v1/signals/${signalId}/archive`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason }),
+      });
+      if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.message || 'Failed to archive signal');
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      setShowArchiveModal(null);
+      // Invalidate all signals queries to refresh data and counts
+      queryClient.invalidateQueries({ queryKey: ['signals'] });
+    },
+  });
 
   // Fetch signals with filters
   const { data, isLoading } = useQuery({
@@ -700,6 +928,14 @@ function SignalsPage() {
 
   const signals = data?.data as Signal[] | undefined;
 
+  // Helper to get signal summary for modals
+  const getSignalSummary = (signal: Signal) => {
+    const payload = signal.rawPayload;
+    const companyName = payload?.companyName || payload?.company || 'Unknown Company';
+    const jobTitle = payload?.jobTitle || signal.summary || 'Unknown Position';
+    return `${jobTitle} at ${companyName}`;
+  };
+
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
@@ -763,9 +999,37 @@ function SignalsPage() {
               signal={signal}
               isExpanded={expandedId === signal.id}
               onToggle={() => toggleExpand(signal.id)}
+              onPush={() => pushMutation.mutate(signal.id)}
+              onArchive={() => setShowArchiveModal({
+                signalId: signal.id,
+                signalSummary: getSignalSummary(signal)
+              })}
+              isPushPending={pushMutation.isPending && pushMutation.variables === signal.id}
             />
           ))}
         </div>
+      )}
+
+      {/* Push Success Modal */}
+      {pushResult && (
+        <PushSuccessModal
+          result={pushResult.result}
+          signalSummary={pushResult.signalSummary}
+          onClose={() => setPushResult(null)}
+        />
+      )}
+
+      {/* Archive Modal */}
+      {showArchiveModal && (
+        <ArchiveModal
+          signalSummary={showArchiveModal.signalSummary}
+          onConfirm={(reason) => archiveMutation.mutate({
+            signalId: showArchiveModal.signalId,
+            reason
+          })}
+          onCancel={() => setShowArchiveModal(null)}
+          isPending={archiveMutation.isPending}
+        />
       )}
     </div>
   );
