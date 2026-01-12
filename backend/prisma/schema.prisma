@@ -139,6 +139,26 @@ model Signal {
   processedAt     DateTime? @map("processed_at")
   hypothesisCount Int      @default(0) @map("hypothesis_count")
 
+  // Staged workflow state
+  // pending = just arrived, enrichment in progress
+  // ready = enriched, awaiting review
+  // pushed = synced to HubSpot
+  // push_failed = HubSpot sync failed, can retry
+  // archived = dismissed
+  status            String    @default("pending")
+  recommendation    Json?     // Stored recommendation from engine
+
+  // HubSpot sync tracking (supports partial pushes and retries)
+  hubspotDealId     String?   @map("hubspot_deal_id")
+  hubspotCompanyIds Json?     @map("hubspot_company_ids")   // Array of company IDs
+  hubspotContactIds Json?     @map("hubspot_contact_ids")   // Array of contact IDs
+  pushedAt          DateTime? @map("pushed_at")
+  pushError         String?   @map("push_error")            // Error message if push_failed
+
+  // Archive tracking
+  archivedAt        DateTime? @map("archived_at")
+  archiveReason     String?   @map("archive_reason")
+
   createdAt       DateTime @default(now()) @map("created_at")
   updatedAt       DateTime @updatedAt @map("updated_at")
 
@@ -148,6 +168,7 @@ model Signal {
   hypotheses      Hypothesis[]
 
   @@unique([source, sourceId])
+  @@index([status])
   @@map("signals")
 }
 
