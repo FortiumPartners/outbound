@@ -1,8 +1,115 @@
+import { useState } from 'react';
 import { Routes, Route, Link, useLocation } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { Building2, Users, Zap, Lightbulb, LayoutDashboard } from 'lucide-react';
+import { Building2, Users, Zap, Lightbulb, LayoutDashboard, ChevronDown, ChevronUp, MapPin, Briefcase, User, ExternalLink } from 'lucide-react';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8004';
+
+// Type definitions for signal data
+interface PEContact {
+  name: string;
+  title: string;
+  organization: string;
+  email?: string;
+  linkedIn?: string;
+}
+
+interface CompanyContact {
+  name: string;
+  title?: string;
+  email?: string;
+}
+
+interface AvailablePartner {
+  uid: string;
+  name: string;
+  role: string;
+  availabilityNext30: number;
+  availabilityNext60?: number;
+  availabilityNext90?: number;
+  email?: string;
+}
+
+interface Connection {
+  type: string;
+  strength: string;
+  via: string;
+  evidence: string;
+  score: number;
+}
+
+interface ContactRecommendation {
+  contact: {
+    name: string;
+    title: string;
+    organization: string;
+    email?: string;
+    linkedIn?: string;
+  };
+  priority: 1 | 2 | 3;
+  score: number;
+  approach: string;
+  channel: string;
+  justification: string;
+  conversationOpener?: string;
+}
+
+interface SignalRecommendation {
+  summary?: string;
+  connections?: Connection[];
+  availablePartners?: AvailablePartner[];
+  contactRecommendations?: ContactRecommendation[];
+  companyContacts?: CompanyContact[];
+  overallScore?: number;
+  engagementType?: string;
+}
+
+interface SignalRawPayload {
+  companyName?: string;
+  company?: string;
+  jobTitle?: string;
+  metro?: string;
+  postedDate?: string;
+  description?: string;
+  peContacts?: PEContact[];
+  contacts?: CompanyContact[];
+  sourceUrl?: string;
+  url?: string;
+}
+
+interface Signal {
+  id: string;
+  type: string;
+  source: string;
+  severity: string;
+  summary: string;
+  status: string;
+  rawPayload: SignalRawPayload | null;
+  recommendation: SignalRecommendation | null;
+  hubspotDealId: string | null;
+  pushedAt: string | null;
+  pushError: string | null;
+  archivedAt: string | null;
+  archiveReason: string | null;
+  createdAt: string;
+}
+
+// Status colors for the status dot
+const statusColors: Record<string, string> = {
+  pending: 'bg-yellow-500',
+  ready: 'bg-blue-500',
+  pushed: 'bg-green-500',
+  push_failed: 'bg-red-500',
+  archived: 'bg-gray-400',
+};
+
+const statusLabels: Record<string, string> = {
+  pending: 'Pending',
+  ready: 'Ready',
+  pushed: 'Pushed',
+  push_failed: 'Failed',
+  archived: 'Archived',
+};
 
 function NavLink({ to, children, icon: Icon }: { to: string; children: React.ReactNode; icon: React.ComponentType<{ className?: string }> }) {
   const location = useLocation();
@@ -252,7 +359,279 @@ function ContactsPage() {
   );
 }
 
+// SignalCard Component - Expandable card for displaying signal details
+function SignalCard({ signal, isExpanded, onToggle }: {
+  signal: Signal;
+  isExpanded: boolean;
+  onToggle: () => void;
+}) {
+  const payload = signal.rawPayload;
+  const rec = signal.recommendation;
+
+  // Extract display values
+  const companyName = payload?.companyName || payload?.company || 'Unknown Company';
+  const jobTitle = payload?.jobTitle || signal.summary || 'Unknown Position';
+  const metro = payload?.metro;
+  const peContacts = payload?.peContacts || [];
+  const companyContacts = payload?.contacts || [];
+  const peFirm = peContacts[0]?.organization;
+
+  // Get recommendation data if available
+  const connections = rec?.connections || [];
+  const availablePartners = rec?.availablePartners || [];
+  const contactRecommendations = rec?.contactRecommendations || [];
+  const recCompanyContacts = rec?.companyContacts || [];
+
+  // Calculate summary chips
+  const peMatchCount = connections.filter(c => c.type === 'pe_relationship').length;
+  const partnersAvailable = availablePartners.length;
+
+  // Format date
+  const createdDate = new Date(signal.createdAt);
+  const dateStr = createdDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+
+  // Extract "Why We Can Win" reasons from connections
+  const whyWeCanWin = connections
+    .filter(c => c.strength === 'strong' || c.strength === 'medium')
+    .slice(0, 3)
+    .map(c => c.evidence);
+
+  return (
+    <div className="rounded-lg border bg-card overflow-hidden">
+      {/* Collapsed View - Always visible */}
+      <div className="p-4">
+        {/* Header row: status, date */}
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-2">
+            <span className={`h-2.5 w-2.5 rounded-full ${statusColors[signal.status] || 'bg-gray-400'}`} />
+            <span className="text-sm text-muted-foreground">
+              {statusLabels[signal.status] || signal.status}
+            </span>
+            {signal.pushError && (
+              <span className="text-xs text-red-600 ml-2">
+                Error: {signal.pushError.slice(0, 50)}...
+              </span>
+            )}
+          </div>
+          <span className="text-sm text-muted-foreground">{dateStr}</span>
+        </div>
+
+        {/* Title */}
+        <h3 className="font-semibold text-lg mb-2">
+          {jobTitle} at {companyName}
+        </h3>
+
+        {/* Metro + PE Firm */}
+        <div className="flex items-center gap-4 text-sm text-muted-foreground mb-3">
+          {metro && (
+            <span className="flex items-center gap-1">
+              <MapPin className="h-4 w-4" />
+              {metro}
+            </span>
+          )}
+          {peFirm && (
+            <span className="flex items-center gap-1">
+              <Briefcase className="h-4 w-4" />
+              {peFirm}
+            </span>
+          )}
+        </div>
+
+        {/* Summary chips - only show if we have recommendation data */}
+        {rec && (
+          <div className="flex gap-2 mb-4">
+            {peMatchCount > 0 && (
+              <span className="px-2 py-1 rounded text-xs bg-green-100 text-green-700">
+                PE MATCH: {peMatchCount} closed deal{peMatchCount > 1 ? 's' : ''}
+              </span>
+            )}
+            {partnersAvailable > 0 && (
+              <span className="px-2 py-1 rounded text-xs bg-blue-100 text-blue-700">
+                PARTNERS: {partnersAvailable} available
+              </span>
+            )}
+            {rec.overallScore && (
+              <span className={`px-2 py-1 rounded text-xs ${
+                rec.overallScore >= 60 ? 'bg-green-100 text-green-700' :
+                rec.overallScore >= 40 ? 'bg-yellow-100 text-yellow-700' :
+                'bg-gray-100 text-gray-700'
+              }`}>
+                Score: {rec.overallScore}
+              </span>
+            )}
+          </div>
+        )}
+
+        {/* View Analysis button */}
+        <button
+          onClick={onToggle}
+          className="flex items-center gap-1 text-sm text-primary hover:underline"
+        >
+          {isExpanded ? (
+            <>
+              <ChevronUp className="h-4 w-4" />
+              Hide Analysis
+            </>
+          ) : (
+            <>
+              <ChevronDown className="h-4 w-4" />
+              View Analysis
+            </>
+          )}
+        </button>
+      </div>
+
+      {/* Expanded View */}
+      {isExpanded && (
+        <div className="border-t bg-muted/30 p-4">
+          {/* WHY WE CAN WIN section */}
+          {whyWeCanWin.length > 0 && (
+            <div className="mb-6">
+              <h4 className="text-sm font-semibold uppercase text-muted-foreground mb-2">
+                Why We Can Win
+              </h4>
+              <ul className="space-y-1">
+                {whyWeCanWin.map((reason, i) => (
+                  <li key={i} className="text-sm flex items-start gap-2">
+                    <span className="text-green-600 mt-0.5">*</span>
+                    {reason}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {/* Two-column layout: Company Contacts | PE Contacts */}
+          <div className="grid md:grid-cols-2 gap-6 mb-6">
+            {/* Company Contacts (Buyers) */}
+            <div>
+              <h4 className="text-sm font-semibold uppercase text-muted-foreground mb-2 flex items-center gap-1">
+                <User className="h-4 w-4" />
+                Company Contacts (Buyers)
+              </h4>
+              {(companyContacts.length > 0 || recCompanyContacts.length > 0) ? (
+                <ul className="space-y-2">
+                  {[...companyContacts, ...recCompanyContacts].slice(0, 5).map((contact, i) => (
+                    <li key={i} className="text-sm">
+                      <span className="font-medium">{contact.name}</span>
+                      {contact.title && <span className="text-muted-foreground"> - {contact.title}</span>}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-sm text-muted-foreground italic">No contacts found</p>
+              )}
+            </div>
+
+            {/* PE Contacts (Influencers) */}
+            <div>
+              <h4 className="text-sm font-semibold uppercase text-muted-foreground mb-2 flex items-center gap-1">
+                <Briefcase className="h-4 w-4" />
+                PE Contacts (Influencers)
+              </h4>
+              {peContacts.length > 0 ? (
+                <ul className="space-y-2">
+                  {peContacts.slice(0, 5).map((contact, i) => (
+                    <li key={i} className="text-sm">
+                      <span className="font-medium">{contact.name}</span>
+                      <span className="text-muted-foreground"> - {contact.title}</span>
+                      {contact.organization && (
+                        <span className="text-muted-foreground block text-xs">{contact.organization}</span>
+                      )}
+                    </li>
+                  ))}
+                  {peContacts.length > 5 && (
+                    <li className="text-sm text-muted-foreground">+ {peContacts.length - 5} more</li>
+                  )}
+                </ul>
+              ) : (
+                <p className="text-sm text-muted-foreground italic">No PE contacts found</p>
+              )}
+            </div>
+          </div>
+
+          {/* Available Partners */}
+          {availablePartners.length > 0 && (
+            <div className="mb-6">
+              <h4 className="text-sm font-semibold uppercase text-muted-foreground mb-2">
+                Available Partners
+              </h4>
+              <ul className="space-y-2">
+                {availablePartners.slice(0, 3).map((partner, i) => (
+                  <li key={i} className="text-sm flex items-center gap-2">
+                    <span className="font-medium">{partner.name}</span>
+                    <span className="text-muted-foreground">({partner.role})</span>
+                    <span className="px-1.5 py-0.5 rounded text-xs bg-blue-100 text-blue-700">
+                      {partner.availabilityNext30}% available
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {/* Suggested Approach */}
+          {contactRecommendations.length > 0 && (
+            <div className="mb-6">
+              <h4 className="text-sm font-semibold uppercase text-muted-foreground mb-2">
+                Suggested Approach
+              </h4>
+              <div className="space-y-2">
+                {contactRecommendations.slice(0, 2).map((rec, i) => (
+                  <div key={i} className="text-sm p-2 bg-card rounded border">
+                    <span className="font-medium">{rec.contact.name}</span>
+                    <span className="text-muted-foreground"> ({rec.contact.title})</span>
+                    <p className="text-muted-foreground mt-1">{rec.justification}</p>
+                    {rec.conversationOpener && (
+                      <p className="mt-2 text-xs italic border-l-2 border-primary pl-2">
+                        "{rec.conversationOpener}"
+                      </p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* HubSpot link if pushed */}
+          {signal.hubspotDealId && (
+            <div className="mb-4">
+              <a
+                href={`https://app.hubspot.com/contacts/record/0-3/${signal.hubspotDealId}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 text-sm text-primary hover:underline"
+              >
+                <ExternalLink className="h-4 w-4" />
+                View in HubSpot
+              </a>
+            </div>
+          )}
+
+          {/* Action Buttons - Placeholder for Task 11 */}
+          <div className="flex gap-3 pt-4 border-t">
+            <button
+              className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm font-medium hover:bg-primary/90 disabled:opacity-50"
+              disabled={signal.status === 'pushed' || signal.status === 'archived'}
+            >
+              Push to HubSpot
+            </button>
+            <button
+              className="px-4 py-2 border border-input bg-background rounded-md text-sm font-medium hover:bg-muted disabled:opacity-50"
+              disabled={signal.status === 'archived'}
+            >
+              Archive
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SignalsPage() {
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+
   const { data, isLoading } = useQuery({
     queryKey: ['signals'],
     queryFn: async () => {
@@ -262,61 +641,31 @@ function SignalsPage() {
     },
   });
 
+  const toggleExpand = (id: string) => {
+    setExpandedId(expandedId === id ? null : id);
+  };
+
+  const signals = data?.data as Signal[] | undefined;
+
   return (
     <div>
       <h2 className="text-2xl font-bold mb-6">Signals</h2>
       {isLoading ? (
         <p className="text-muted-foreground">Loading...</p>
-      ) : data?.data?.length === 0 ? (
+      ) : !signals || signals.length === 0 ? (
         <div className="rounded-lg border bg-card p-8 text-center">
           <Zap className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
           <p className="text-muted-foreground">No signals detected yet</p>
         </div>
       ) : (
         <div className="grid gap-4">
-          {data?.data?.map((signal: {
-            id: string;
-            type: string;
-            source: string;
-            severity: string;
-            summary: string;
-            rawPayload: { companyName?: string; metro?: string; postedDate?: string; description?: string };
-            createdAt: string
-          }) => (
-            <div key={signal.id} className="rounded-lg border bg-card p-4">
-              <div className="flex items-start justify-between mb-2">
-                <div className="flex items-center gap-2">
-                  <span className={`px-2 py-0.5 rounded text-xs font-medium ${
-                    signal.severity === 'high' ? 'bg-red-100 text-red-700' :
-                    signal.severity === 'medium' ? 'bg-yellow-100 text-yellow-700' :
-                    'bg-gray-100 text-gray-700'
-                  }`}>
-                    {signal.severity}
-                  </span>
-                  <span className="px-2 py-0.5 rounded text-xs bg-blue-100 text-blue-700">
-                    {signal.type}
-                  </span>
-                  <span className="text-xs text-muted-foreground">
-                    via {signal.source}
-                  </span>
-                </div>
-                <span className="text-xs text-muted-foreground">
-                  {new Date(signal.createdAt).toLocaleString()}
-                </span>
-              </div>
-              <h3 className="font-semibold mb-1">{signal.summary}</h3>
-              {signal.rawPayload?.metro && (
-                <p className="text-sm text-muted-foreground mb-2">
-                  📍 {signal.rawPayload.metro}
-                  {signal.rawPayload?.postedDate && ` • Posted: ${signal.rawPayload.postedDate}`}
-                </p>
-              )}
-              {signal.rawPayload?.description && (
-                <p className="text-sm text-muted-foreground line-clamp-2">
-                  {signal.rawPayload.description}
-                </p>
-              )}
-            </div>
+          {signals.map((signal) => (
+            <SignalCard
+              key={signal.id}
+              signal={signal}
+              isExpanded={expandedId === signal.id}
+              onToggle={() => toggleExpand(signal.id)}
+            />
           ))}
         </div>
       )}
