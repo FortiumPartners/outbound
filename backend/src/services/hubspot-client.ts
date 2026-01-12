@@ -6,11 +6,35 @@
  * - Companies (PE firms, portfolio companies)
  * - Contacts (decision-makers)
  * - Associations (relationships between objects)
+ *
+ * Also provides CREATE methods for syncing signals to HubSpot:
+ * - findOrCreateCompany: idempotent company creation
+ * - findOrCreateContact: idempotent contact creation
+ * - createDeal: deal creation
+ * - association methods for linking objects
  */
 
 import { HubSpotDeal, HubSpotCompany, HubSpotContact, HubSpotAssociation, SimilarDeal } from './types.js';
 
 const HUBSPOT_API_BASE = 'https://api.hubapi.com';
+
+// ============================================================================
+// Rate Limiting
+// ============================================================================
+
+// Simple rate limiter: max 10 requests per second (HubSpot limit is 100/10s)
+let lastRequestTime = 0;
+const MIN_REQUEST_INTERVAL = 100; // ms between requests
+
+async function rateLimitedRequest<T>(fn: () => Promise<T>): Promise<T> {
+  const now = Date.now();
+  const timeSinceLastRequest = now - lastRequestTime;
+  if (timeSinceLastRequest < MIN_REQUEST_INTERVAL) {
+    await new Promise(resolve => setTimeout(resolve, MIN_REQUEST_INTERVAL - timeSinceLastRequest));
+  }
+  lastRequestTime = Date.now();
+  return fn();
+}
 
 interface HubSpotSearchResponse<T> {
   total: number;
@@ -22,10 +46,23 @@ interface HubSpotSearchResponse<T> {
   };
 }
 
-interface HubSpotAssociationsResponse {
+// v3 API response
+interface HubSpotAssociationsResponseV3 {
   results: Array<{
     id: string;
     type: string;
+  }>;
+}
+
+// v4 API response (used by getDealContacts, getDealCompanies)
+interface HubSpotAssociationsResponseV4 {
+  results: Array<{
+    toObjectId: number;
+    associationTypes: Array<{
+      category: string;
+      typeId: number;
+      label: string | null;
+    }>;
   }>;
 }
 
@@ -234,6 +271,88 @@ export class HubSpotClient {
     return similarDeals;
   }
 
+  /**
+   * Search for closed-won deals by keyword in deal name.
+   * Also returns contacts associated with each deal.
+   * Useful for finding industry-related past work (e.g., "anesthesia").
+   */
+  async searchDealsByKeyword(keyword: string): Promise<Array<SimilarDeal & { contacts: Array<{ name: string; title?: string }> }>> {
+    const response = await this.request<HubSpotSearchResponse<HubSpotDeal>>(
+      '/crm/v3/objects/deals/search',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          filterGroups: [
+            {
+              filters: [
+                { propertyName: 'dealstage', operator: 'EQ', value: 'closedwon' },
+                { propertyName: 'dealname', operator: 'CONTAINS_TOKEN', value: keyword },
+              ],
+            },
+          ],
+          properties: ['dealname', 'dealstage', 'practice', 'closedate', 'amount'],
+          sorts: [{ propertyName: 'closedate', direction: 'DESCENDING' }],
+          limit: 10,
+        }),
+      }
+    );
+
+    const results: Array<SimilarDeal & { contacts: Array<{ name: string; title?: string }> }> = [];
+
+    for (const deal of response.results.slice(0, 5)) {
+      try {
+        // Get contacts associated with this deal
+        const contactAssociations = await this.getDealContacts(deal.id);
+        const contacts: Array<{ name: string; title?: string }> = [];
+
+        for (const assoc of contactAssociations.slice(0, 5)) {
+          try {
+            const contact = await this.getContact(assoc.id);
+            const name = [contact.properties.firstname, contact.properties.lastname].filter(Boolean).join(' ');
+            contacts.push({
+              name: name || 'Unknown',
+              title: contact.properties.jobtitle,
+            });
+          } catch {
+            // Skip contacts we can't fetch
+          }
+        }
+
+        // Get company info
+        const companyAssociations = await this.getDealCompanies(deal.id);
+        let companyName = 'Unknown Company';
+        let peFirm: string | undefined;
+
+        for (const assoc of companyAssociations.slice(0, 3)) {
+          try {
+            const company = await this.getCompany(assoc.id);
+            if (company.properties.private_equity_relationship === 'Private Equity Firm') {
+              peFirm = company.properties.name;
+            } else if (companyName === 'Unknown Company') {
+              companyName = company.properties.name;
+            }
+          } catch {
+            // Skip companies we can't fetch
+          }
+        }
+
+        results.push({
+          dealId: deal.id,
+          dealName: deal.properties.dealname,
+          companyName,
+          practice: deal.properties.practice || '',
+          closeDate: deal.properties.closedate || '',
+          peFirm,
+          contacts,
+        });
+      } catch {
+        // Skip deals with errors
+      }
+    }
+
+    return results;
+  }
+
   // ============================================================================
   // Company Operations
   // ============================================================================
@@ -355,20 +474,28 @@ export class HubSpotClient {
    * Get deals associated with a company
    */
   async getCompanyDeals(companyId: string): Promise<HubSpotAssociation[]> {
-    const response = await this.request<HubSpotAssociationsResponse>(
+    const response = await this.request<HubSpotAssociationsResponseV4>(
       `/crm/v4/objects/companies/${companyId}/associations/deals`
     );
-    return response.results;
+    // Map v4 response (toObjectId) to HubSpotAssociation format (id)
+    return response.results.map(r => ({
+      id: String(r.toObjectId),
+      type: r.associationTypes[0]?.category || 'unknown',
+    }));
   }
 
   /**
    * Get contacts associated with a company
    */
   async getCompanyContacts(companyId: string): Promise<HubSpotAssociation[]> {
-    const response = await this.request<HubSpotAssociationsResponse>(
+    const response = await this.request<HubSpotAssociationsResponseV4>(
       `/crm/v4/objects/companies/${companyId}/associations/contacts`
     );
-    return response.results;
+    // Map v4 response (toObjectId) to HubSpotAssociation format (id)
+    return response.results.map(r => ({
+      id: String(r.toObjectId),
+      type: r.associationTypes[0]?.category || 'unknown',
+    }));
   }
 
   /**
@@ -394,20 +521,28 @@ export class HubSpotClient {
    * Get companies associated with a deal
    */
   async getDealCompanies(dealId: string): Promise<HubSpotAssociation[]> {
-    const response = await this.request<HubSpotAssociationsResponse>(
+    const response = await this.request<HubSpotAssociationsResponseV4>(
       `/crm/v4/objects/deals/${dealId}/associations/companies`
     );
-    return response.results;
+    // Map v4 response (toObjectId) to HubSpotAssociation format (id)
+    return response.results.map(r => ({
+      id: String(r.toObjectId),
+      type: r.associationTypes[0]?.category || 'unknown',
+    }));
   }
 
   /**
    * Get contacts associated with a deal
    */
   async getDealContacts(dealId: string): Promise<HubSpotAssociation[]> {
-    const response = await this.request<HubSpotAssociationsResponse>(
+    const response = await this.request<HubSpotAssociationsResponseV4>(
       `/crm/v4/objects/deals/${dealId}/associations/contacts`
     );
-    return response.results;
+    // Map v4 response (toObjectId) to HubSpotAssociation format (id)
+    return response.results.map(r => ({
+      id: String(r.toObjectId),
+      type: r.associationTypes[0]?.category || 'unknown',
+    }));
   }
 
   // ============================================================================
@@ -447,6 +582,208 @@ export class HubSpotClient {
     );
 
     return note;
+  }
+
+  // ============================================================================
+  // CREATE Operations (for Signal Push)
+  // ============================================================================
+
+  /**
+   * Find an existing company by name or create a new one.
+   * Uses case-insensitive exact match for deduplication.
+   */
+  async findOrCreateCompany(
+    name: string,
+    properties: Record<string, string> = {}
+  ): Promise<{ id: string; created: boolean }> {
+    // First, try to find existing by name
+    const existing = await this.searchCompanies(name, 1);
+    if (existing.length > 0 && existing[0].properties.name?.toLowerCase() === name.toLowerCase()) {
+      return { id: existing[0].id, created: false };
+    }
+
+    // Create new company
+    const response = await rateLimitedRequest(() =>
+      fetch(`${HUBSPOT_API_BASE}/crm/v3/objects/companies`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${this.accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          properties: { name, ...properties },
+        }),
+      })
+    );
+
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`Failed to create company: ${response.status} - ${error}`);
+    }
+
+    const data = await response.json();
+    return { id: data.id, created: true };
+  }
+
+  /**
+   * Find an existing contact by first/last name or create a new one.
+   * Uses exact match on both names for deduplication.
+   */
+  async findOrCreateContact(
+    firstName: string,
+    lastName: string,
+    properties: Record<string, string> = {}
+  ): Promise<{ id: string; created: boolean }> {
+    // Search by first and last name
+    const searchResponse = await rateLimitedRequest(() =>
+      fetch(`${HUBSPOT_API_BASE}/crm/v3/objects/contacts/search`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${this.accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          filterGroups: [{
+            filters: [
+              { propertyName: 'firstname', operator: 'EQ', value: firstName },
+              { propertyName: 'lastname', operator: 'EQ', value: lastName },
+            ],
+          }],
+          limit: 1,
+        }),
+      })
+    );
+
+    if (searchResponse.ok) {
+      const searchData = await searchResponse.json();
+      if (searchData.results?.length > 0) {
+        return { id: searchData.results[0].id, created: false };
+      }
+    }
+
+    // Create new contact
+    const response = await rateLimitedRequest(() =>
+      fetch(`${HUBSPOT_API_BASE}/crm/v3/objects/contacts`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${this.accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          properties: { firstname: firstName, lastname: lastName, ...properties },
+        }),
+      })
+    );
+
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`Failed to create contact: ${response.status} - ${error}`);
+    }
+
+    const data = await response.json();
+    return { id: data.id, created: true };
+  }
+
+  /**
+   * Create a new deal in HubSpot.
+   * Returns the deal ID.
+   */
+  async createDeal(
+    name: string,
+    properties: Record<string, string> = {}
+  ): Promise<string> {
+    const response = await rateLimitedRequest(() =>
+      fetch(`${HUBSPOT_API_BASE}/crm/v3/objects/deals`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${this.accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          properties: { dealname: name, ...properties },
+        }),
+      })
+    );
+
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`Failed to create deal: ${response.status} - ${error}`);
+    }
+
+    const data = await response.json();
+    return data.id;
+  }
+
+  /**
+   * Associate a deal with a company.
+   * Uses HubSpot v4 associations API.
+   */
+  async associateDealToCompany(dealId: string, companyId: string): Promise<void> {
+    const response = await rateLimitedRequest(() =>
+      fetch(`${HUBSPOT_API_BASE}/crm/v4/objects/deals/${dealId}/associations/companies/${companyId}`, {
+        method: 'PUT',
+        headers: {
+          'Authorization': `Bearer ${this.accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify([
+          { associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 341 } // Deal to Company
+        ]),
+      })
+    );
+
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`Failed to associate deal to company: ${response.status} - ${error}`);
+    }
+  }
+
+  /**
+   * Associate a deal with a contact.
+   * Uses HubSpot v4 associations API.
+   */
+  async associateDealToContact(dealId: string, contactId: string): Promise<void> {
+    const response = await rateLimitedRequest(() =>
+      fetch(`${HUBSPOT_API_BASE}/crm/v4/objects/deals/${dealId}/associations/contacts/${contactId}`, {
+        method: 'PUT',
+        headers: {
+          'Authorization': `Bearer ${this.accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify([
+          { associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 3 } // Deal to Contact
+        ]),
+      })
+    );
+
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`Failed to associate deal to contact: ${response.status} - ${error}`);
+    }
+  }
+
+  /**
+   * Associate a contact with a company.
+   * Uses HubSpot v4 associations API.
+   */
+  async associateContactToCompany(contactId: string, companyId: string): Promise<void> {
+    const response = await rateLimitedRequest(() =>
+      fetch(`${HUBSPOT_API_BASE}/crm/v4/objects/contacts/${contactId}/associations/companies/${companyId}`, {
+        method: 'PUT',
+        headers: {
+          'Authorization': `Bearer ${this.accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify([
+          { associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 1 } // Contact to Company
+        ]),
+      })
+    );
+
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`Failed to associate contact to company: ${response.status} - ${error}`);
+    }
   }
 
   // ============================================================================
