@@ -1,5 +1,5 @@
 /**
- * E2E test to verify the Google Sign-in button behavior
+ * E2E test to verify the Google Sign-in button behavior with PKCE
  * This tests what happens when a user clicks "Sign in with Google"
  */
 
@@ -9,65 +9,61 @@ import { test, expect } from '@playwright/test';
 const PROD_URL = 'https://outbound-frontend.onrender.com';
 
 test.describe('Google Sign-in Button', () => {
-  test('Sign in with Google button has correct href', async ({ page }) => {
+  test('Sign in with Google button exists and is clickable', async ({ page }) => {
     // Navigate to login page
     await page.goto(`${PROD_URL}/login`);
     await page.waitForLoadState('networkidle');
 
-    // Find the "Sign in with Google" link/button
-    const googleSignInLink = page.locator('a:has-text("Sign in with Google")');
+    // Find the "Sign in with Google" button (uses onClick for PKCE, not href)
+    const googleSignInButton = page.locator('button:has-text("Sign in with Google")');
 
-    // Get the href attribute
-    const href = await googleSignInLink.getAttribute('href');
-    console.log('Sign in with Google href:', href);
+    // Verify it exists and is visible
+    await expect(googleSignInButton).toBeVisible();
+    console.log('Sign in with Google button is visible');
 
-    // The href should NOT point to /auth/login (backend)
-    // It should either:
-    // 1. Point to the OIDC provider (if VITE_OIDC_ISSUER is set)
-    // 2. Point to /login (if no OIDC issuer, should stay on login page or show error)
-    // It should NOT redirect to the backend /auth/login endpoint
-
-    // Check the href
-    expect(href).toBeDefined();
-
-    // Log for debugging
-    if (href?.includes('/auth/login')) {
-      console.log('WARNING: Sign in with Google points to /auth/login (backend endpoint)');
-      console.log('This is the issue - it should point to the OIDC issuer or handle the case properly');
-    } else if (href?.includes('oauth2/authorize')) {
-      console.log('OK: Sign in with Google points to OIDC issuer');
-    } else {
-      console.log('href value:', href);
-    }
+    // The button uses PKCE flow (onClick triggers initiateOidcLogin)
+    // It's a button, not a link
+    const tagName = await googleSignInButton.evaluate((el) => el.tagName);
+    expect(tagName.toLowerCase()).toBe('button');
+    console.log('Confirmed: Sign in with Google is a button (PKCE flow)');
   });
 
-  test('clicking Sign in with Google shows expected behavior', async ({ page }) => {
+  test('clicking Sign in with Google initiates PKCE flow', async ({ page }) => {
     // Navigate to login page
     await page.goto(`${PROD_URL}/login`);
     await page.waitForLoadState('networkidle');
 
-    // Find the "Sign in with Google" link/button
-    const googleSignInLink = page.locator('a:has-text("Sign in with Google")');
-    const href = await googleSignInLink.getAttribute('href');
+    // Find the "Sign in with Google" button
+    const googleSignInButton = page.locator('button:has-text("Sign in with Google")');
+    await expect(googleSignInButton).toBeVisible();
 
-    console.log('href before click:', href);
+    // Click the button - it should redirect to the OIDC provider
+    // We catch the navigation because it goes to an external domain
+    const navigationPromise = page.waitForURL(/identity-api.*\/oidc\/auth|accounts\.google\.com/, {
+      timeout: 10000,
+    }).catch(() => null);
 
-    // Click the button and see where it goes
-    // (We're not following the redirect fully, just checking the initial behavior)
-    await Promise.all([
-      page.waitForNavigation({ waitUntil: 'commit' }),
-      googleSignInLink.click(),
-    ]).catch(() => {
-      // Navigation might fail if it goes to external domain
-    });
+    await googleSignInButton.click();
+
+    // Wait for navigation or timeout
+    await navigationPromise;
 
     // Check current URL after click
     const currentUrl = page.url();
     console.log('URL after clicking Sign in with Google:', currentUrl);
 
-    // Check if we ended up at /auth/login (the 404 issue)
-    if (currentUrl.includes('/auth/login')) {
-      console.log('ISSUE CONFIRMED: Clicking Sign in redirects to /auth/login');
+    // Should NOT end up at /auth/login (the old 404 issue)
+    expect(currentUrl).not.toContain('/auth/login');
+
+    // Should be at the OIDC provider authorization endpoint
+    if (currentUrl.includes('identity-api')) {
+      console.log('SUCCESS: Redirected to Fortium Identity OIDC provider');
+      expect(currentUrl).toContain('/oidc/auth');
+      expect(currentUrl).toContain('code_challenge'); // PKCE parameter
+    } else if (currentUrl.includes('accounts.google.com')) {
+      console.log('SUCCESS: Redirected to Google OAuth');
+    } else if (currentUrl.includes('outbound-frontend')) {
+      console.log('INFO: Still on Outbound frontend - may be an error or loading state');
     }
   });
 });

@@ -25,6 +25,13 @@ services:
         sync: false  # Set to Supabase pooler URL
       - key: HUBSPOT_ACCESS_TOKEN
         sync: false
+      # Auth configuration
+      - key: JWT_SECRET
+        generateValue: true  # Render generates a secure random value
+      - key: COOKIE_SECRET
+        generateValue: true  # Render generates a secure random value
+      - key: OIDC_ISSUER
+        value: https://identity-api-kj1r.onrender.com/oidc
 
   # Frontend static site
   - type: web
