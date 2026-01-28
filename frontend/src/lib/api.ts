@@ -15,16 +15,24 @@ export function getAuthUrl(path: string): string {
 }
 
 /**
- * Get OIDC login URL (redirects to Identity service)
+ * Check if OIDC is configured
  */
-export function getOidcLoginUrl(): string {
+export function isOidcConfigured(): boolean {
+  return !!import.meta.env.VITE_OIDC_ISSUER;
+}
+
+/**
+ * Get OIDC login URL (redirects to Identity service)
+ * Returns null if OIDC is not configured - caller should handle this case
+ */
+export function getOidcLoginUrl(): string | null {
   const oidcIssuer = import.meta.env.VITE_OIDC_ISSUER;
   if (oidcIssuer) {
     // Real OIDC flow - redirect to Identity
     return `${oidcIssuer}/oauth2/authorize?client_id=outbound&redirect_uri=${encodeURIComponent(window.location.origin + '/auth/callback')}&response_type=code&scope=openid%20profile%20email`;
   }
-  // Fallback for dev - just go to auth login
-  return getAuthUrl('/login');
+  // OIDC not configured - return null so caller can handle appropriately
+  return null;
 }
 
 export interface User {
