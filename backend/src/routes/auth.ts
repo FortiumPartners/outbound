@@ -197,4 +197,117 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
 
     return { success: true, message: 'Logged out successfully' };
   });
+
+  /**
+   * POST /auth/oidc/callback
+   * Exchange OIDC authorization code for tokens (with PKCE)
+   * Called by frontend after redirect from Identity service
+   */
+  fastify.post('/oidc/callback', {
+    schema: {
+      body: z.object({
+        code: z.string(),
+        code_verifier: z.string(),
+        redirect_uri: z.string().url(),
+      }),
+    },
+  }, async (request, reply) => {
+    const { code, code_verifier, redirect_uri } = request.body as {
+      code: string;
+      code_verifier: string;
+      redirect_uri: string;
+    };
+
+    // Get OIDC issuer - strip /oidc suffix for token endpoint base
+    const oidcIssuer = config.OIDC_ISSUER;
+    if (!oidcIssuer) {
+      fastify.log.error('OIDC_ISSUER not configured');
+      return reply.status(500).send({
+        error: 'Server Configuration Error',
+        message: 'OIDC is not configured',
+        statusCode: 500,
+      });
+    }
+
+    // Exchange code for tokens at Identity service
+    const tokenEndpoint = `${oidcIssuer}/token`;
+
+    try {
+      const tokenResponse = await fetch(tokenEndpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: new URLSearchParams({
+          grant_type: 'authorization_code',
+          code,
+          redirect_uri,
+          client_id: 'outbound-api',
+          code_verifier,
+        }).toString(),
+      });
+
+      if (!tokenResponse.ok) {
+        const errorData = await tokenResponse.json().catch(() => ({}));
+        fastify.log.error({ error: errorData }, 'Token exchange failed');
+        return reply.status(401).send({
+          error: 'Token Exchange Failed',
+          message: errorData.error_description || 'Failed to exchange code for tokens',
+          statusCode: 401,
+        });
+      }
+
+      const tokens = await tokenResponse.json() as {
+        access_token: string;
+        id_token: string;
+        token_type: string;
+        expires_in: number;
+        refresh_token?: string;
+      };
+
+      // Decode ID token to get user info (we trust it since it came from Identity)
+      const idTokenParts = tokens.id_token.split('.');
+      const payload = JSON.parse(atob(idTokenParts[1]));
+
+      const user: AuthUser = {
+        fortiumUserId: payload.sub || payload.fortium_user_id,
+        email: payload.email,
+        name: payload.name || payload.email,
+      };
+
+      // Create local session token
+      const sessionToken = await createSessionToken(user, '8h');
+
+      // Set session cookie
+      reply.setCookie('outbound_session', sessionToken, {
+        path: '/',
+        httpOnly: true,
+        secure: config.NODE_ENV === 'production',
+        signed: true,
+        sameSite: 'lax',
+        maxAge: 8 * 60 * 60, // 8 hours
+      });
+
+      fastify.log.info(
+        { fortiumUserId: user.fortiumUserId, email: user.email },
+        'User logged in via OIDC',
+      );
+
+      return {
+        success: true,
+        user: {
+          fortiumUserId: user.fortiumUserId,
+          email: user.email,
+          name: user.name,
+        },
+      };
+    } catch (err) {
+      fastify.log.error({ err }, 'OIDC callback error');
+      return reply.status(500).send({
+        error: 'Internal Server Error',
+        message: 'Failed to complete authentication',
+        statusCode: 500,
+      });
+    }
+  });
 };

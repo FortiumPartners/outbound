@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Building2, Users, Zap, Lightbulb, LayoutDashboard, ChevronDown, ChevronUp, MapPin, Briefcase, User, ExternalLink, X, CheckCircle, LogOut, Loader2 } from 'lucide-react';
 import { AuthProvider, useAuth } from './hooks/useAuth';
 import { LoginPage } from './pages/LoginPage';
+import { AuthCallback } from './pages/AuthCallback';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8004';
 
@@ -1131,6 +1132,7 @@ function AppRoutes() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
+      <Route path="/auth/callback" element={<AuthCallback />} />
       <Route
         path="/*"
         element={

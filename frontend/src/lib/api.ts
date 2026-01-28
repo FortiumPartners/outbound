@@ -29,16 +29,98 @@ export function isOidcConfigured(): boolean {
 }
 
 /**
- * Get OIDC login URL (redirects to Identity service)
- * Returns null if OIDC is not configured - caller should handle this case
+ * PKCE helpers for secure OIDC flow
+ */
+function generateCodeVerifier(): string {
+  const array = new Uint8Array(32);
+  crypto.getRandomValues(array);
+  return base64UrlEncode(array);
+}
+
+function base64UrlEncode(buffer: Uint8Array): string {
+  const base64 = btoa(String.fromCharCode(...buffer));
+  return base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+async function generateCodeChallenge(verifier: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(verifier);
+  const hash = await crypto.subtle.digest('SHA-256', data);
+  return base64UrlEncode(new Uint8Array(hash));
+}
+
+/**
+ * Initiate OIDC login with PKCE
+ * Generates code_verifier, stores it, and redirects to Identity
+ */
+export async function initiateOidcLogin(): Promise<void> {
+  if (!OIDC_ISSUER) {
+    throw new Error('OIDC not configured');
+  }
+
+  // Generate PKCE code verifier and challenge
+  const codeVerifier = generateCodeVerifier();
+  const codeChallenge = await generateCodeChallenge(codeVerifier);
+
+  // Store code verifier for token exchange
+  sessionStorage.setItem('oidc_code_verifier', codeVerifier);
+
+  // Build authorization URL with PKCE
+  const params = new URLSearchParams({
+    client_id: 'outbound-api',
+    redirect_uri: window.location.origin + '/auth/callback',
+    response_type: 'code',
+    scope: 'openid profile email',
+    code_challenge: codeChallenge,
+    code_challenge_method: 'S256',
+  });
+
+  window.location.href = `${OIDC_ISSUER}/auth?${params.toString()}`;
+}
+
+/**
+ * Get OIDC login URL - DEPRECATED, use initiateOidcLogin() instead
+ * Returns null if OIDC is not configured
  */
 export function getOidcLoginUrl(): string | null {
-  if (OIDC_ISSUER) {
-    // Real OIDC flow - redirect to Identity (oidc-provider uses /auth endpoint)
-    return `${OIDC_ISSUER}/auth?client_id=outbound-api&redirect_uri=${encodeURIComponent(window.location.origin + '/auth/callback')}&response_type=code&scope=openid%20profile%20email`;
+  // Return null - caller should use initiateOidcLogin() for PKCE support
+  return OIDC_ISSUER ? 'javascript:void(0)' : null;
+}
+
+/**
+ * Exchange authorization code for tokens (called from callback page)
+ */
+export async function exchangeCodeForTokens(code: string): Promise<boolean> {
+  if (!OIDC_ISSUER) {
+    throw new Error('OIDC not configured');
   }
-  // OIDC not configured - return null so caller can handle appropriately
-  return null;
+
+  const codeVerifier = sessionStorage.getItem('oidc_code_verifier');
+  if (!codeVerifier) {
+    throw new Error('Missing code verifier - login flow corrupted');
+  }
+
+  // Exchange code for tokens via backend proxy (to keep client_secret secure)
+  const response = await fetch(`${AUTH_BASE}/oidc/callback`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      code,
+      code_verifier: codeVerifier,
+      redirect_uri: window.location.origin + '/auth/callback',
+    }),
+  });
+
+  // Clear stored verifier
+  sessionStorage.removeItem('oidc_code_verifier');
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.message || 'Token exchange failed');
+  }
+
+  return true;
 }
 
 export interface User {
