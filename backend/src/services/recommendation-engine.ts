@@ -12,7 +12,7 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import { getHubSpotClient } from './hubspot-client.js';
-import { getPartnerConnectClient, normalizeRoleCode, RoleCode } from './partnerconnect-client.js';
+import { getPartnerConnectClient, normalizeRoleCode } from './partnerconnect-client.js';
 import {
   OpportunityContext,
   Connection,
@@ -23,12 +23,17 @@ import {
   ApproachType,
   Channel,
   PEContact,
-  AvailablePartner,
   SimilarDeal,
   EngagementType,
   CompanyContact,
   SCORING_WEIGHTS,
 } from './types.js';
+
+// Extended SimilarDeal with contacts for industry matches
+interface IndustryDeal extends SimilarDeal {
+  contacts: Array<{ name: string; title?: string }>;
+  matchedKeyword?: string;
+}
 
 export class RecommendationEngine {
   private hubspot = getHubSpotClient();
@@ -65,14 +70,14 @@ export class RecommendationEngine {
     const engagementType = this.determineEngagementType(context);
     context.engagementType = engagementType;
 
-    // Step 3: Discover connections (now includes functional match)
+    // Step 3: Discover connections
     const connections = await this.discoverConnections(context);
 
-    // Step 4: Get available partners for functional matching
-    const availablePartners = await this.getAvailablePartnersForRole(context);
-
-    // Step 5: Get similar deals for framing
+    // Step 4: Get similar deals for framing (HubSpot data, not partner matching)
     const similarDeals = await this.getSimilarDeals(context);
+
+    // Step 5: Get industry-related deals from HubSpot (e.g., anesthesia)
+    const industryDeals = await this.getIndustryDeals(context);
 
     // Step 6: Get existing company contacts from HubSpot
     const companyContacts = await this.getCompanyContacts(context.company.name);
@@ -83,8 +88,8 @@ export class RecommendationEngine {
     // Step 8: Calculate overall score
     const overallScore = this.calculateOverallScore(connections, contactRecommendations);
 
-    // Step 9: Generate summary with new format
-    const summary = this.generateSummary(context, connections, contactRecommendations, availablePartners, similarDeals, companyContacts);
+    // Step 9: Generate summary (partner matching handled by Piper)
+    const summary = this.generateSummary(context, connections, contactRecommendations, similarDeals, companyContacts, industryDeals);
 
     // Step 10: Generate Claude conversation openers for top contacts
     if (this.anthropic && contactRecommendations.length > 0) {
@@ -98,7 +103,7 @@ export class RecommendationEngine {
       connections,
       overallScore,
       engagementType,
-      availablePartners,
+      availablePartners: [], // Partner matching handled by Piper
       similarDeals,
       companyContacts,
       contactRecommendations,
@@ -137,33 +142,6 @@ export class RecommendationEngine {
   }
 
   /**
-   * Get available partners that match the functional role
-   */
-  private async getAvailablePartnersForRole(context: OpportunityContext): Promise<AvailablePartner[]> {
-    if (!this.partnerConnect || !context.functionalRole) {
-      return [];
-    }
-
-    try {
-      const resources = await this.partnerConnect.getAvailablePartnersByRole(context.functionalRole as RoleCode);
-
-      // Transform to AvailablePartner format (top 5)
-      return resources.slice(0, 5).map(r => ({
-        uid: r.uid,
-        name: r.displayName,
-        role: r.leadershipRoleCode || context.functionalRole || '',
-        availabilityNext30: r.availabilityNext30 || 0,
-        availabilityNext60: r.availabilityNext60,
-        availabilityNext90: r.availabilityNext90,
-        email: r.primaryEmail,
-      }));
-    } catch (e) {
-      console.warn('Failed to get available partners for role:', e);
-      return [];
-    }
-  }
-
-  /**
    * Get similar closed-won deals for framing qualifications
    */
   private async getSimilarDeals(context: OpportunityContext): Promise<SimilarDeal[]> {
@@ -178,6 +156,42 @@ export class RecommendationEngine {
       console.warn('Failed to get similar deals:', e);
       return [];
     }
+  }
+
+  /**
+   * Get industry-related deals from HubSpot based on company name keywords.
+   * Returns deals with contacts (e.g., "U.S. Anesthesia Partners" with "Julian Sparkes").
+   */
+  private async getIndustryDeals(context: OpportunityContext): Promise<IndustryDeal[]> {
+    const keywords = this.extractIndustryKeywords(context.company.name);
+    if (keywords.length === 0) {
+      return [];
+    }
+
+    const allDeals: IndustryDeal[] = [];
+    const seenDealIds = new Set<string>();
+
+    for (const keyword of keywords) {
+      try {
+        const deals = await this.hubspot.searchDealsByKeyword(keyword);
+
+        for (const deal of deals) {
+          // Skip if already seen or if it's the same company
+          if (seenDealIds.has(deal.dealId)) continue;
+          if (deal.companyName.toLowerCase() === context.company.name.toLowerCase()) continue;
+
+          seenDealIds.add(deal.dealId);
+          allDeals.push({
+            ...deal,
+            matchedKeyword: keyword,
+          });
+        }
+      } catch (e) {
+        console.warn(`Failed to search HubSpot deals for keyword "${keyword}":`, e);
+      }
+    }
+
+    return allDeals;
   }
 
   /**
@@ -260,19 +274,13 @@ export class RecommendationEngine {
       connections.push(...partnerConnections);
     }
 
-    // 4. Check for functional match (partners with matching role + availability)
-    const functionalConnection = await this.checkFunctionalMatch(context);
-    if (functionalConnection) {
-      connections.push(functionalConnection);
-    }
-
-    // 5. Check for similar deals (same practice area)
+    // 4. Check for similar deals (same practice area)
     const similarDealConnection = await this.checkSimilarDeals(context);
     if (similarDealConnection) {
       connections.push(similarDealConnection);
     }
 
-    // 6. Check for industry matches
+    // 5. Check for industry matches
     if (context.company.industry) {
       const industryConnection = await this.checkIndustryMatch(context.company.industry);
       if (industryConnection) {
@@ -284,61 +292,6 @@ export class RecommendationEngine {
     connections.sort((a, b) => b.score - a.score);
 
     return connections;
-  }
-
-  /**
-   * Check for functional match (partners with matching role and availability)
-   */
-  private async checkFunctionalMatch(context: OpportunityContext): Promise<Connection | null> {
-    if (!this.partnerConnect || !context.functionalRole) {
-      return null;
-    }
-
-    try {
-      const roleCode = context.functionalRole as RoleCode;
-
-      // Get all partners with this role
-      const allPartners = await this.partnerConnect.searchPartnersByRole(roleCode);
-
-      // Get available partners with this role
-      const availablePartners = await this.partnerConnect.getAvailablePartnersByRole(roleCode);
-
-      if (allPartners.length === 0) {
-        return null;
-      }
-
-      // Calculate strength based on count and availability
-      const availableCount = availablePartners.length;
-      const totalCount = allPartners.length;
-
-      let strength: ConnectionStrength;
-      let score: number;
-
-      if (availableCount >= 3) {
-        strength = 'strong';
-        score = SCORING_WEIGHTS.connection.functional_match + 10; // Bonus for high availability
-      } else if (availableCount >= 1) {
-        strength = 'medium';
-        score = SCORING_WEIGHTS.connection.functional_match;
-      } else {
-        strength = 'weak';
-        score = SCORING_WEIGHTS.connection.functional_match - 10;
-      }
-
-      return {
-        type: 'functional_match',
-        strength,
-        via: roleCode,
-        evidence: `${totalCount} ${roleCode}s in network, ${availableCount} with availability`,
-        score,
-        metadata: {
-          partnerId: availablePartners[0]?.uid,
-        },
-      };
-    } catch (e) {
-      console.warn('Failed to check functional match:', e);
-      return null;
-    }
   }
 
   /**
@@ -451,7 +404,7 @@ export class RecommendationEngine {
     if (!this.partnerConnect) return connections;
 
     try {
-      // Check if company is in PartnerConnect as a client
+      // Check if company is in PartnerConnect as a client (exact match)
       const pcResult = await this.partnerConnect.isPastClient(context.company.name);
 
       if (pcResult.isPastClient) {
@@ -467,12 +420,90 @@ export class RecommendationEngine {
         });
       }
 
+      // Also search by industry keywords extracted from company name
+      const industryKeywords = this.extractIndustryKeywords(context.company.name);
+      if (industryKeywords.length > 0) {
+        const industryMatches = await this.partnerConnect.findPastWorkByIndustry(industryKeywords);
+
+        // Filter out exact company match (already handled above)
+        const newMatches = industryMatches.filter(
+          m => m.client.displayName?.toLowerCase() !== context.company.name.toLowerCase()
+        );
+
+        if (newMatches.length > 0) {
+          const matchedClients = newMatches.map(m => m.client.displayName).slice(0, 3);
+          const matchedKeyword = industryKeywords.find(k =>
+            matchedClients.some(c => c?.toLowerCase().includes(k.toLowerCase()))
+          ) || industryKeywords[0];
+
+          connections.push({
+            type: 'industry_match',
+            strength: newMatches.length >= 2 ? 'medium' : 'weak',
+            via: matchedKeyword,
+            evidence: `Past work with similar companies: ${matchedClients.join(', ')}`,
+            score: SCORING_WEIGHTS.connection.industry_match + (newMatches.length >= 2 ? 5 : 0),
+            metadata: {
+              companyId: newMatches[0].client.uid,
+            },
+          });
+        }
+      }
+
       // NOTE: Metro/location match removed - Fortium prioritizes ability/experience, not location
     } catch (e) {
       console.warn('Failed to check PartnerConnect:', e);
     }
 
     return connections;
+  }
+
+  /**
+   * Extract industry keywords from a company name.
+   * These keywords are used to find similar past clients in PartnerConnect.
+   *
+   * Examples:
+   *   "North American Partners in Anesthesia" → ["anesthesia", "anesthesiology"]
+   *   "Healthcare Services Inc" → ["healthcare"]
+   *   "TechCorp Software" → ["software", "tech"]
+   */
+  private extractIndustryKeywords(companyName: string): string[] {
+    const keywords: string[] = [];
+    const nameLower = companyName.toLowerCase();
+
+    // Industry keyword patterns with related terms
+    const industryPatterns: { pattern: RegExp; keywords: string[] }[] = [
+      { pattern: /anesthe/i, keywords: ['anesthesia', 'anesthesiology'] },
+      { pattern: /health/i, keywords: ['healthcare', 'health'] },
+      { pattern: /medical/i, keywords: ['medical', 'healthcare'] },
+      { pattern: /pharma/i, keywords: ['pharmaceutical', 'pharma'] },
+      { pattern: /biotech/i, keywords: ['biotech', 'biotechnology'] },
+      { pattern: /software/i, keywords: ['software', 'tech'] },
+      { pattern: /fintech/i, keywords: ['fintech', 'financial'] },
+      { pattern: /insur/i, keywords: ['insurance'] },
+      { pattern: /manufact/i, keywords: ['manufacturing'] },
+      { pattern: /logist/i, keywords: ['logistics', 'supply chain'] },
+      { pattern: /retail/i, keywords: ['retail'] },
+      { pattern: /energy/i, keywords: ['energy'] },
+      { pattern: /construc/i, keywords: ['construction'] },
+      { pattern: /real\s*estate/i, keywords: ['real estate'] },
+      { pattern: /hospit/i, keywords: ['hospitality', 'hospital'] },
+      { pattern: /educati/i, keywords: ['education'] },
+      { pattern: /media/i, keywords: ['media'] },
+      { pattern: /telecom/i, keywords: ['telecom', 'telecommunications'] },
+      { pattern: /automo/i, keywords: ['automotive'] },
+      { pattern: /aero/i, keywords: ['aerospace'] },
+      { pattern: /defense/i, keywords: ['defense'] },
+      { pattern: /cyber/i, keywords: ['cybersecurity', 'cyber'] },
+    ];
+
+    for (const { pattern, keywords: relatedKeywords } of industryPatterns) {
+      if (pattern.test(nameLower)) {
+        keywords.push(...relatedKeywords);
+      }
+    }
+
+    // Remove duplicates
+    return [...new Set(keywords)];
   }
 
   /**
@@ -638,14 +669,15 @@ export class RecommendationEngine {
 
   /**
    * Generate human-readable summary with HTML format for HubSpot
+   * Note: Partner matching (which partners to recommend) is handled by Piper
    */
   private generateSummary(
     context: OpportunityContext,
     connections: Connection[],
     contacts: ContactRecommendation[],
-    availablePartners: AvailablePartner[],
     similarDeals: SimilarDeal[],
-    companyContacts: CompanyContact[] = []
+    companyContacts: CompanyContact[] = [],
+    industryDeals: IndustryDeal[] = []
   ): string {
     const parts: string[] = [];
     const role = context.functionalRole || context.jobTitle;
@@ -679,12 +711,6 @@ export class RecommendationEngine {
       parts.push(`<li><strong>PE Portfolio Match:</strong> ${peConnection.evidence}</li>`);
     }
 
-    // Functional Fit
-    const functionalConnection = connections.find(c => c.type === 'functional_match');
-    if (functionalConnection) {
-      parts.push(`<li><strong>Functional Fit:</strong> ${functionalConnection.evidence}</li>`);
-    }
-
     // Similar Wins
     if (similarDeals.length > 0) {
       const practice = this.mapRoleToPractice(role) || role;
@@ -710,17 +736,6 @@ export class RecommendationEngine {
 
     parts.push('</ul>');
 
-    // RECOMMENDED PARTNERS section
-    if (availablePartners.length > 0) {
-      parts.push('<h3>RECOMMENDED PARTNERS</h3>');
-      parts.push('<ol>');
-      for (const partner of availablePartners.slice(0, 3)) {
-        const availabilityPct = partner.availabilityNext30;
-        parts.push(`<li><strong>${partner.name}</strong> - ${partner.role}, ${availabilityPct}% available next 30 days</li>`);
-      }
-      parts.push('</ol>');
-    }
-
     // PE CONTACTS TO APPROACH section
     if (contacts.length > 0) {
       parts.push('<h3>PE CONTACTS TO APPROACH</h3>');
@@ -745,9 +760,35 @@ export class RecommendationEngine {
       parts.push('</ol>');
     }
 
+    // RELATED INDUSTRY EXPERIENCE section (past deals in similar industry)
+    if (industryDeals.length > 0) {
+      parts.push('<h3>RELATED INDUSTRY EXPERIENCE</h3>');
+      parts.push('<p><em>Past closed-won deals in related industries:</em></p>');
+      parts.push('<ul>');
+      for (const deal of industryDeals.slice(0, 5)) {
+        const practicePart = deal.practice ? ` (${deal.practice})` : '';
+        const peFirmPart = deal.peFirm ? ` - PE: ${deal.peFirm}` : '';
+        parts.push(`<li><strong>${deal.dealName}</strong>${practicePart}${peFirmPart}`);
+
+        // Show contacts on this deal (key for Julian Sparkes use case)
+        if (deal.contacts && deal.contacts.length > 0) {
+          const contactList = deal.contacts
+            .slice(0, 3)
+            .map(c => {
+              const titlePart = c.title ? ` (${c.title})` : '';
+              return `${c.name}${titlePart}`;
+            })
+            .join(', ');
+          parts.push(`<br/><em>Key contacts: ${contactList}</em>`);
+        }
+        parts.push('</li>');
+      }
+      parts.push('</ul>');
+    }
+
     // ROCK SOLID OFFER section
     parts.push('<h3>ROCK SOLID OFFER</h3>');
-    const offer = this.generateRockSolidOffer(context, connections, availablePartners, similarDeals);
+    const offer = this.generateRockSolidOffer(context, connections, similarDeals);
     parts.push(`<blockquote>"${offer}"</blockquote>`);
 
     // Footer
@@ -763,7 +804,6 @@ export class RecommendationEngine {
   private generateRockSolidOffer(
     context: OpportunityContext,
     connections: Connection[],
-    availablePartners: AvailablePartner[],
     similarDeals: SimilarDeal[]
   ): string {
     const role = context.functionalRole || context.jobTitle;
@@ -784,13 +824,8 @@ export class RecommendationEngine {
       parts.push(`We've completed ${similarDeals.length} similar ${practice} placements in the past year.`);
     }
 
-    // Add availability
-    if (availablePartners.length > 0) {
-      const topPartner = availablePartners[0];
-      parts.push(`We have a ${role} with ${topPartner.availabilityNext30}% availability who could start immediately.`);
-    } else {
-      parts.push(`We have experienced ${role}s in our network ready to engage.`);
-    }
+    // Generic availability statement (Piper handles specific partner matching)
+    parts.push(`We have experienced ${role}s in our network ready to engage.`);
 
     // Close with engagement type framing
     const engagementType = context.engagementType || 'interim';

@@ -254,6 +254,53 @@ export class PartnerConnectClientService {
     );
   }
 
+  /**
+   * Search clients by multiple keywords (industry terms, company type, etc.)
+   * Searches in displayName and domain for any matching keyword.
+   *
+   * @param keywords - Array of keywords to search for (e.g., ['anesthesia', 'healthcare', 'medical'])
+   * @returns Clients matching any of the keywords
+   */
+  async searchClientsByKeywords(keywords: string[]): Promise<PartnerConnectClient[]> {
+    const clients = await this.getClients();
+    const keywordsLower = keywords.map(k => k.toLowerCase());
+
+    return clients.filter(c => {
+      const name = c.displayName?.toLowerCase() || '';
+      const domain = c.domain?.toLowerCase() || '';
+      const combined = `${name} ${domain}`;
+
+      return keywordsLower.some(keyword => combined.includes(keyword));
+    });
+  }
+
+  /**
+   * Find past work related to an industry or company type.
+   * Searches for clients with matching keywords and returns with their engagements.
+   *
+   * @param keywords - Industry terms to search for (e.g., ['anesthesia', 'anesthesiology'])
+   * @returns Matching clients with their engagements
+   */
+  async findPastWorkByIndustry(keywords: string[]): Promise<{
+    client: PartnerConnectClient;
+    engagements: PartnerConnectEngagement[];
+  }[]> {
+    const matchingClients = await this.searchClientsByKeywords(keywords);
+    const results: { client: PartnerConnectClient; engagements: PartnerConnectEngagement[] }[] = [];
+
+    for (const client of matchingClients.slice(0, 10)) { // Limit to first 10
+      try {
+        const engagements = await this.getClientEngagements(client.uid);
+        results.push({ client, engagements });
+      } catch {
+        // Skip clients we can't get engagements for
+        results.push({ client, engagements: [] });
+      }
+    }
+
+    return results;
+  }
+
   // ============================================================================
   // Engagement Operations
   // ============================================================================

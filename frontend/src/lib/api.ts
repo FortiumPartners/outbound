@@ -2,7 +2,14 @@
  * API client for Outbound backend
  */
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8004';
+// Production defaults
+const PROD_API_URL = 'https://fortiumoutbound.onrender.com';
+const PROD_OIDC_ISSUER = 'https://identity-api-kj1r.onrender.com/oidc';
+
+const isProd = window.location.hostname.includes('onrender.com');
+const API_URL = import.meta.env.VITE_API_URL || (isProd ? PROD_API_URL : 'http://localhost:8004');
+const OIDC_ISSUER = import.meta.env.VITE_OIDC_ISSUER || (isProd ? PROD_OIDC_ISSUER : null);
+
 const API_BASE = `${API_URL}/api/v1`;
 const AUTH_BASE = `${API_URL}/auth`;
 
@@ -18,7 +25,7 @@ export function getAuthUrl(path: string): string {
  * Check if OIDC is configured
  */
 export function isOidcConfigured(): boolean {
-  return !!import.meta.env.VITE_OIDC_ISSUER;
+  return !!OIDC_ISSUER;
 }
 
 /**
@@ -26,10 +33,9 @@ export function isOidcConfigured(): boolean {
  * Returns null if OIDC is not configured - caller should handle this case
  */
 export function getOidcLoginUrl(): string | null {
-  const oidcIssuer = import.meta.env.VITE_OIDC_ISSUER;
-  if (oidcIssuer) {
+  if (OIDC_ISSUER) {
     // Real OIDC flow - redirect to Identity
-    return `${oidcIssuer}/oauth2/authorize?client_id=outbound&redirect_uri=${encodeURIComponent(window.location.origin + '/auth/callback')}&response_type=code&scope=openid%20profile%20email`;
+    return `${OIDC_ISSUER}/oauth2/authorize?client_id=outbound-api&redirect_uri=${encodeURIComponent(window.location.origin + '/auth/callback')}&response_type=code&scope=openid%20profile%20email`;
   }
   // OIDC not configured - return null so caller can handle appropriately
   return null;

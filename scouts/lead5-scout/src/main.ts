@@ -471,6 +471,180 @@ async function extractPEContacts(page: Page): Promise<PEContact[]> {
   return peContacts;
 }
 
+/**
+ * Extract Company Contacts from the "Company Contacts" or "Contacts" section.
+ * These are executives at the portfolio company (CEO, CFO, HR, etc.) - NOT PE firm people.
+ * Company Contacts have email icons, PE Contacts have LinkedIn icons.
+ */
+async function extractCompanyContacts(page: Page): Promise<CompanyContact[]> {
+  const companyContacts: CompanyContact[] = [];
+
+  try {
+    // Wait for Angular lazy loading
+    await page.waitForTimeout(2000);
+
+    // Extract company contacts from the DOM
+    const contactData = await page.evaluate(() => {
+      const contacts: Array<{ name: string; title: string; email?: string; phone?: string }> = [];
+      const bodyText = document.body.textContent || '';
+
+      // Check if Company Contacts section exists (might be "Contacts", "Key Executives", etc.)
+      const hasContactsSection =
+        bodyText.includes('Company Contacts') ||
+        bodyText.includes('Key Contacts') ||
+        bodyText.includes('Key Executives') ||
+        bodyText.includes('Management Team');
+
+      if (!hasContactsSection) {
+        return { contacts, sectionFound: false };
+      }
+
+      // Find the contacts section header
+      const allElements = Array.from(document.querySelectorAll('*'));
+      let contactsHeader: Element | null = null;
+      const headerPatterns = ['Company Contacts', 'Key Contacts', 'Key Executives', 'Management Team'];
+
+      for (const el of allElements) {
+        const text = el.textContent?.trim() || '';
+        // Look for exact header match (leaf node)
+        for (const pattern of headerPatterns) {
+          if (text === pattern && el.children.length === 0) {
+            contactsHeader = el;
+            break;
+          }
+        }
+        if (contactsHeader) break;
+      }
+
+      if (!contactsHeader) {
+        return { contacts, sectionFound: true, headerFound: false };
+      }
+
+      // Find the container (GDPeopleContainer or similar) that holds the contacts
+      let container = contactsHeader.parentElement;
+      for (let i = 0; i < 5 && container; i++) {
+        if (container.classList.contains('GDPeopleContainer') ||
+            container.querySelectorAll('.blackBoldText').length > 0) {
+          break;
+        }
+        container = container.parentElement;
+      }
+
+      if (!container) {
+        return { contacts, sectionFound: true, headerFound: true, containerFound: false };
+      }
+
+      // Extract each contact from the container
+      // Same pattern as PE contacts: .blackBoldText for name, .grayText for title
+      // But Company Contacts may have .iconEmail instead of .iconLinkedin
+      const contactRows = container.querySelectorAll('.d-flex.mb15p48px, [class*="mb15p"]');
+
+      contactRows.forEach(row => {
+        const nameEl = row.querySelector('.blackBoldText');
+        const titleEl = row.querySelector('.grayText');
+        const emailEl = row.querySelector('a.iconEmail, [class*="iconEmail"], a[href^="mailto:"]');
+
+        // Get ONLY direct text content of the name element
+        let name = '';
+        if (nameEl) {
+          const clone = nameEl.cloneNode(true) as HTMLElement;
+          clone.querySelectorAll('*').forEach(child => child.remove());
+          name = clone.textContent?.trim() || '';
+
+          if (!name) {
+            const firstTextNode = Array.from(nameEl.childNodes).find(
+              node => node.nodeType === Node.TEXT_NODE && node.textContent?.trim()
+            );
+            name = firstTextNode?.textContent?.trim() || '';
+          }
+        }
+
+        // Get ONLY direct text content of the title element
+        let title = '';
+        if (titleEl) {
+          const clone = titleEl.cloneNode(true) as HTMLElement;
+          clone.querySelectorAll('*').forEach(child => child.remove());
+          title = clone.textContent?.trim() || '';
+
+          if (!title) {
+            const firstTextNode = Array.from(titleEl.childNodes).find(
+              node => node.nodeType === Node.TEXT_NODE && node.textContent?.trim()
+            );
+            title = firstTextNode?.textContent?.trim() || '';
+          }
+        }
+
+        // Clean up name
+        name = name.split('\n')[0].trim();
+        name = name.replace(/(Senior|Junior|Partner|Director|Managing|Associate|Principal|Vice|President|CEO|CFO|CIO|CTO|Chief|Officer|Head)$/i, '').trim();
+
+        // Clean up title
+        title = title.split('\n')[0].trim();
+
+        // Get email if present
+        let email: string | undefined;
+        if (emailEl) {
+          const href = emailEl.getAttribute('href');
+          if (href?.startsWith('mailto:')) {
+            email = href.replace('mailto:', '').split('?')[0];
+          }
+        }
+
+        // Validate: name should look like a person's name
+        const isValidName = name.length >= 3 &&
+                           name.length < 50 &&
+                           !name.includes('Capital') &&
+                           !name.includes('Partners') &&
+                           !name.includes('Company') &&
+                           /^[A-Z][a-z]+(\s+[A-Z]?[a-z]+){0,3}$/.test(name);
+
+        if (isValidName) {
+          contacts.push({ name, title, email });
+        }
+      });
+
+      // Deduplicate by name
+      const seen = new Set<string>();
+      const uniqueContacts = contacts.filter(c => {
+        if (seen.has(c.name)) return false;
+        seen.add(c.name);
+        return true;
+      });
+
+      return { contacts: uniqueContacts, sectionFound: true, headerFound: true, containerFound: true };
+    });
+
+    // Log what we found
+    if (!contactData.sectionFound) {
+      console.log('    No Company Contacts section found on page');
+    } else if (!contactData.headerFound) {
+      console.log('    Company Contacts section exists but header not found');
+    } else if (!contactData.containerFound) {
+      console.log('    Company Contacts header found but container not found');
+    } else if (contactData.contacts.length === 0) {
+      console.log('    Company Contacts section found but no contacts extracted');
+    } else {
+      console.log(`    Found ${contactData.contacts.length} company contacts`);
+    }
+
+    // Convert to CompanyContact format
+    for (const contact of contactData.contacts) {
+      companyContacts.push({
+        name: contact.name,
+        title: contact.title,
+        email: contact.email,
+        phone: undefined, // Can add phone extraction if needed
+      });
+      console.log(`    Company Contact: ${contact.name} (${contact.title})${contact.email ? ` - ${contact.email}` : ''}`);
+    }
+
+  } catch (error) {
+    console.log(`    Company Contacts extraction failed: ${(error as Error).message}`);
+  }
+
+  return companyContacts;
+}
+
 async function extractDetailPageData(page: Page, cardText: string): Promise<DetailPageData> {
   try {
     // 1. Basic page data via evaluate
@@ -562,7 +736,11 @@ async function extractDetailPageData(page: Page, cardText: string): Promise<Deta
       return result;
     });
 
-    // 2. PE Contacts (requires clicking modals - cannot be done in page.evaluate)
+    // 2. Extract contacts from page
+    // Company contacts are executives at the portfolio company (CEO, CFO, HR, etc.)
+    const companyContacts = await extractCompanyContacts(page);
+
+    // PE Contacts are people at the PE firm (Partners, Principals, etc.)
     const peContacts = await extractPEContacts(page);
 
     return {
@@ -573,6 +751,7 @@ async function extractDetailPageData(page: Page, cardText: string): Promise<Deta
         industry: pageData.industry,
         ownership: pageData.ownership,
       },
+      contacts: companyContacts,  // NEW: Portfolio company contacts
       peContacts,
       enrichmentStatus: 'success',
     };

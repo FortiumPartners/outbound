@@ -199,6 +199,10 @@ Every hypothesis records:
 - Approver can `approve` or `reject` (with reason)
 - High-risk actions (gifts, likeness, aggressive monitoring) require approval
 
+## Strategy Documents
+
+- **`docs/PE_OUTBOUND_STRATEGY.md`** - PE buyer messaging based on PitchBook Q4 2025 analysis. Core thesis: PE needs execution capacity, not capital. Contains 7 key messages, master narrative, and objection handling.
+
 ## Related Projects
 
 - **Atlas** (localhost:8003/3005): People & Organization service - source of truth for identity
