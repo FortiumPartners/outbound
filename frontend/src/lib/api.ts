@@ -34,8 +34,8 @@ export function isOidcConfigured(): boolean {
  */
 export function getOidcLoginUrl(): string | null {
   if (OIDC_ISSUER) {
-    // Real OIDC flow - redirect to Identity
-    return `${OIDC_ISSUER}/oauth2/authorize?client_id=outbound-api&redirect_uri=${encodeURIComponent(window.location.origin + '/auth/callback')}&response_type=code&scope=openid%20profile%20email`;
+    // Real OIDC flow - redirect to Identity (oidc-provider uses /auth endpoint)
+    return `${OIDC_ISSUER}/auth?client_id=outbound-api&redirect_uri=${encodeURIComponent(window.location.origin + '/auth/callback')}&response_type=code&scope=openid%20profile%20email`;
   }
   // OIDC not configured - return null so caller can handle appropriately
   return null;
