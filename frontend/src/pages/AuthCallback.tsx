@@ -51,10 +51,10 @@ export function AuthCallback() {
         {error ? (
           <>
             <div className="text-red-500 mb-4">
-              <svg className="w-12 h-12 mx-auto\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" strokeWidth=\"2\">
-                <circle cx=\"12\" cy=\"12\" r=\"10\" />
-                <line x1=\"15\" y1=\"9\" x2=\"9\" y2=\"15\" />
-                <line x1=\"9\" y1=\"9\" x2=\"15\" y2=\"15\" />
+              <svg className="w-12 h-12 mx-auto" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <circle cx="12" cy="12" r="10" />
+                <line x1="15" y1="9" x2="9" y2="15" />
+                <line x1="9" y1="9" x2="15" y2="15" />
               </svg>
             </div>
             <h2 className="text-xl font-semibold text-gray-900 mb-2">Sign-in Failed</h2>
