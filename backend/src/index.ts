@@ -1,5 +1,6 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
+import cookie from '@fastify/cookie';
 import swagger from '@fastify/swagger';
 import swaggerUi from '@fastify/swagger-ui';
 import {
@@ -8,7 +9,9 @@ import {
   ZodTypeProvider,
 } from 'fastify-type-provider-zod';
 import { config } from './lib/config.js';
+import authPlugin, { authenticate } from './plugins/auth.js';
 import { healthRoutes } from './routes/health.js';
+import { authRoutes } from './routes/auth.js';
 import { accountRoutes } from './routes/accounts.js';
 import { contactRoutes } from './routes/contacts.js';
 import { signalRoutes } from './routes/signals.js';
@@ -29,10 +32,20 @@ fastify.setValidatorCompiler(validatorCompiler);
 fastify.setSerializerCompiler(serializerCompiler);
 
 async function main() {
-  // CORS
+  // CORS - allow credentials for cookies
   await fastify.register(cors, {
     origin: true,
+    credentials: true,
   });
+
+  // Cookie support for session tokens
+  await fastify.register(cookie, {
+    secret: config.COOKIE_SECRET,
+    parseOptions: {},
+  });
+
+  // Auth plugin - adds authenticate decorator
+  await fastify.register(authPlugin);
 
   // Swagger/OpenAPI
   await fastify.register(swagger, {
@@ -45,11 +58,22 @@ async function main() {
       servers: [{ url: `http://localhost:${config.PORT}` }],
       tags: [
         { name: 'Health', description: 'Health check endpoints' },
+        { name: 'Auth', description: 'Authentication endpoints' },
         { name: 'Accounts', description: 'Account management (Universe)' },
         { name: 'Contacts', description: 'Contact management (Universe)' },
         { name: 'Signals', description: 'Signal ingestion and management' },
         { name: 'Hypotheses', description: 'Hypothesis generation and approval workflow' },
       ],
+      components: {
+        securitySchemes: {
+          bearerAuth: {
+            type: 'http',
+            scheme: 'bearer',
+            bearerFormat: 'JWT',
+            description: 'JWT token from Identity service or test-login',
+          },
+        },
+      },
     },
   });
 
@@ -57,12 +81,22 @@ async function main() {
     routePrefix: '/docs',
   });
 
-  // Routes
+  // Public routes (no auth required)
   await fastify.register(healthRoutes);
-  await fastify.register(accountRoutes, { prefix: '/api/v1/accounts' });
-  await fastify.register(contactRoutes, { prefix: '/api/v1/contacts' });
-  await fastify.register(signalRoutes, { prefix: '/api/v1/signals' });
-  await fastify.register(hypothesesRoutes, { prefix: '/api/v1/hypotheses' });
+  await fastify.register(authRoutes, { prefix: '/auth' });
+
+  // Protected routes (auth required)
+  // Wrap all /api/v1/* routes in a context with authentication preHandler
+  await fastify.register(async (protectedContext) => {
+    // Apply authentication to all routes in this context
+    protectedContext.addHook('preHandler', authenticate);
+
+    // Register protected route handlers
+    await protectedContext.register(accountRoutes, { prefix: '/accounts' });
+    await protectedContext.register(contactRoutes, { prefix: '/contacts' });
+    await protectedContext.register(signalRoutes, { prefix: '/signals' });
+    await protectedContext.register(hypothesesRoutes, { prefix: '/hypotheses' });
+  }, { prefix: '/api/v1' });
 
   // Start server
   try {

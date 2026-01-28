@@ -9,6 +9,8 @@ services:
     container_name: outbound-api
     ports:
       - "8004:8000"
+    env_file:
+      - .env
     environment:
       - NODE_ENV=development
       - PORT=8000
@@ -17,6 +19,17 @@ services:
       - DATABASE_URL=postgresql://fortium_render_production_postgres_user:qUoIQ7rLsDBEDEu7kZwfKHyuIXIXyCXC@dpg-d5dcfmqli9vc73dfrfvg-a.oregon-postgres.render.com/outbound
       - HUBSPOT_ACCESS_TOKEN=${HUBSPOT_ACCESS_TOKEN}
       - HUBSPOT_PORTAL_ID=${HUBSPOT_PORTAL_ID:-48750181}
+      # PartnerConnect API credentials
+      - PC_CLIENT_ID=${PC_CLIENT_ID}
+      - PC_CLIENT_SECRET=${PC_CLIENT_SECRET}
+      # Auth configuration (Fortium Identity integration)
+      - JWT_SECRET=${JWT_SECRET}
+      - COOKIE_SECRET=${COOKIE_SECRET}
+      # OIDC_ISSUER must include /oidc path - Identity serves OIDC endpoints there
+      - OIDC_ISSUER=http://host.docker.internal:3099/oidc
+      - OIDC_CLIENT_ID=outbound-api
+      - ENABLE_TEST_AUTH=true
+      - TEST_AUTH_KEY=${TEST_AUTH_KEY}
     volumes:
       - ./backend:/app:delegated
       - /app/node_modules
@@ -42,6 +55,10 @@ services:
     environment:
       - NODE_ENV=development
       - VITE_API_URL=http://localhost:8004
+      # OIDC Configuration (Fortium Identity)
+      - VITE_OIDC_ISSUER=http://localhost:3099/oidc
+      - VITE_OIDC_CLIENT_ID=outbound-api
+      - VITE_OIDC_REDIRECT_URI=http://localhost:3006/auth/callback
     volumes:
       - ./frontend:/app:delegated
       - /app/node_modules
