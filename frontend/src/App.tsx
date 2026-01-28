@@ -1,7 +1,9 @@
 import { useState } from 'react';
-import { Routes, Route, Link, useLocation } from 'react-router-dom';
+import { Routes, Route, Link, useLocation, Navigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Building2, Users, Zap, Lightbulb, LayoutDashboard, ChevronDown, ChevronUp, MapPin, Briefcase, User, ExternalLink, X, CheckCircle } from 'lucide-react';
+import { Building2, Users, Zap, Lightbulb, LayoutDashboard, ChevronDown, ChevronUp, MapPin, Briefcase, User, ExternalLink, X, CheckCircle, LogOut, Loader2 } from 'lucide-react';
+import { AuthProvider, useAuth } from './hooks/useAuth';
+import { LoginPage } from './pages/LoginPage';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8004';
 
@@ -152,6 +154,8 @@ function NavLink({ to, children, icon: Icon }: { to: string; children: React.Rea
 }
 
 function Layout({ children }: { children: React.ReactNode }) {
+  const { user, logout } = useAuth();
+
   return (
     <div className="min-h-screen bg-background">
       <header className="border-b">
@@ -166,6 +170,19 @@ function Layout({ children }: { children: React.ReactNode }) {
             <NavLink to="/contacts" icon={Users}>Contacts</NavLink>
             <NavLink to="/signals" icon={Zap}>Signals</NavLink>
             <NavLink to="/hypotheses" icon={Lightbulb}>Hypotheses</NavLink>
+            {user && (
+              <>
+                <div className="w-px h-6 bg-border mx-2" />
+                <span className="text-sm text-muted-foreground">{user.email}</span>
+                <button
+                  onClick={logout}
+                  className="flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                  title="Logout"
+                >
+                  <LogOut className="h-4 w-4" />
+                </button>
+              </>
+            )}
           </nav>
         </div>
       </header>
@@ -174,6 +191,27 @@ function Layout({ children }: { children: React.ReactNode }) {
       </main>
     </div>
   );
+}
+
+/**
+ * Protected route component - redirects to login if not authenticated
+ */
+function ProtectedRoute({ children }: { children: React.ReactNode }) {
+  const { user, loading } = useAuth();
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <Navigate to="/login" replace />;
+  }
+
+  return <>{children}</>;
 }
 
 function DashboardPage() {
@@ -243,34 +281,34 @@ function DashboardPage() {
 
       {/* Stats */}
       <div className="grid gap-4 md:grid-cols-4">
-        <div className="rounded-lg border bg-card p-6">
+        <Link to="/accounts" className="rounded-lg border bg-card p-6 hover:bg-muted/50 transition-colors block">
           <div className="flex items-center gap-2 text-muted-foreground mb-2">
             <Building2 className="h-4 w-4" />
             <span className="text-sm">Accounts</span>
           </div>
           <p className="text-3xl font-bold">{accounts?.pagination?.total ?? '-'}</p>
-        </div>
-        <div className="rounded-lg border bg-card p-6">
+        </Link>
+        <Link to="/contacts" className="rounded-lg border bg-card p-6 hover:bg-muted/50 transition-colors block">
           <div className="flex items-center gap-2 text-muted-foreground mb-2">
             <Users className="h-4 w-4" />
             <span className="text-sm">Contacts</span>
           </div>
           <p className="text-3xl font-bold">{contacts?.pagination?.total ?? '-'}</p>
-        </div>
-        <div className="rounded-lg border bg-card p-6">
+        </Link>
+        <Link to="/signals" className="rounded-lg border bg-card p-6 hover:bg-muted/50 transition-colors block">
           <div className="flex items-center gap-2 text-muted-foreground mb-2">
             <Zap className="h-4 w-4" />
             <span className="text-sm">Signals</span>
           </div>
           <p className="text-3xl font-bold">{signals?.pagination?.total ?? '-'}</p>
-        </div>
-        <div className="rounded-lg border bg-card p-6">
+        </Link>
+        <Link to="/hypotheses?status=pending_review" className="rounded-lg border bg-card p-6 hover:bg-muted/50 transition-colors block">
           <div className="flex items-center gap-2 text-muted-foreground mb-2">
             <Lightbulb className="h-4 w-4" />
             <span className="text-sm">Pending Review</span>
           </div>
           <p className="text-3xl font-bold">{hypothesesQueue?.pagination?.total ?? '-'}</p>
-        </div>
+        </Link>
       </div>
 
       {/* Quick Actions */}
@@ -686,9 +724,19 @@ function SignalCard({ signal, isExpanded, onToggle, onPush, onArchive, isPushPen
               {(companyContacts.length > 0 || recCompanyContacts.length > 0) ? (
                 <ul className="space-y-2">
                   {[...companyContacts, ...recCompanyContacts].slice(0, 5).map((contact, i) => (
-                    <li key={i} className="text-sm">
-                      <span className="font-medium">{contact.name}</span>
-                      {contact.title && <span className="text-muted-foreground"> - {contact.title}</span>}
+                    <li key={i} className="text-sm p-2 bg-muted/50 rounded">
+                      <div>
+                        <span className="font-medium">{contact.name}</span>
+                        {contact.title && <span className="text-muted-foreground"> - {contact.title}</span>}
+                      </div>
+                      {contact.email && (
+                        <a
+                          href={`mailto:${contact.email}`}
+                          className="text-xs text-primary hover:underline mt-1 block"
+                        >
+                          {contact.email}
+                        </a>
+                      )}
                     </li>
                   ))}
                 </ul>
@@ -706,12 +754,34 @@ function SignalCard({ signal, isExpanded, onToggle, onPush, onArchive, isPushPen
               {peContacts.length > 0 ? (
                 <ul className="space-y-2">
                   {peContacts.slice(0, 5).map((contact, i) => (
-                    <li key={i} className="text-sm">
-                      <span className="font-medium">{contact.name}</span>
-                      <span className="text-muted-foreground"> - {contact.title}</span>
+                    <li key={i} className="text-sm p-2 bg-muted/50 rounded">
+                      <div>
+                        <span className="font-medium">{contact.name}</span>
+                        <span className="text-muted-foreground"> - {contact.title}</span>
+                      </div>
                       {contact.organization && (
-                        <span className="text-muted-foreground block text-xs">{contact.organization}</span>
+                        <span className="text-muted-foreground text-xs">{contact.organization}</span>
                       )}
+                      <div className="flex gap-3 mt-1">
+                        {contact.email && (
+                          <a
+                            href={`mailto:${contact.email}`}
+                            className="text-xs text-primary hover:underline"
+                          >
+                            {contact.email}
+                          </a>
+                        )}
+                        {contact.linkedIn && (
+                          <a
+                            href={contact.linkedIn}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-xs text-primary hover:underline"
+                          >
+                            LinkedIn
+                          </a>
+                        )}
+                      </div>
                     </li>
                   ))}
                   {peContacts.length > 5 && (
@@ -731,13 +801,23 @@ function SignalCard({ signal, isExpanded, onToggle, onPush, onArchive, isPushPen
                 Available Partners
               </h4>
               <ul className="space-y-2">
-                {availablePartners.slice(0, 3).map((partner, i) => (
-                  <li key={i} className="text-sm flex items-center gap-2">
-                    <span className="font-medium">{partner.name}</span>
-                    <span className="text-muted-foreground">({partner.role})</span>
-                    <span className="px-1.5 py-0.5 rounded text-xs bg-blue-100 text-blue-700">
-                      {partner.availabilityNext30}% available
-                    </span>
+                {availablePartners.slice(0, 5).map((partner, i) => (
+                  <li key={i} className="text-sm p-2 bg-card rounded border">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-medium">{partner.name}</span>
+                      <span className="text-muted-foreground">({partner.role})</span>
+                      <span className="px-1.5 py-0.5 rounded text-xs bg-blue-100 text-blue-700">
+                        {partner.availabilityNext30}% available
+                      </span>
+                    </div>
+                    {partner.email && (
+                      <a
+                        href={`mailto:${partner.email}`}
+                        className="text-xs text-primary hover:underline mt-1 block"
+                      >
+                        {partner.email}
+                      </a>
+                    )}
                   </li>
                 ))}
               </ul>
@@ -1047,17 +1127,35 @@ function HypothesesPage() {
   );
 }
 
+function AppRoutes() {
+  return (
+    <Routes>
+      <Route path="/login" element={<LoginPage />} />
+      <Route
+        path="/*"
+        element={
+          <ProtectedRoute>
+            <Layout>
+              <Routes>
+                <Route path="/" element={<DashboardPage />} />
+                <Route path="/accounts" element={<AccountsPage />} />
+                <Route path="/contacts" element={<ContactsPage />} />
+                <Route path="/signals" element={<SignalsPage />} />
+                <Route path="/hypotheses" element={<HypothesesPage />} />
+              </Routes>
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+    </Routes>
+  );
+}
+
 function App() {
   return (
-    <Layout>
-      <Routes>
-        <Route path="/" element={<DashboardPage />} />
-        <Route path="/accounts" element={<AccountsPage />} />
-        <Route path="/contacts" element={<ContactsPage />} />
-        <Route path="/signals" element={<SignalsPage />} />
-        <Route path="/hypotheses" element={<HypothesesPage />} />
-      </Routes>
-    </Layout>
+    <AuthProvider>
+      <AppRoutes />
+    </AuthProvider>
   );
 }
 
