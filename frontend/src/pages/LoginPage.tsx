@@ -28,6 +28,7 @@ const errorMessages: Record<string, string> = {
   auth_init_failed: 'Failed to start sign-in. Please try again.',
   invalid_callback: 'Invalid response from identity provider.',
   callback_failed: 'Sign-in failed. Please try again.',
+  session_expired: 'Your session expired. Please sign in again.',
 };
 
 // Check if dev mode
