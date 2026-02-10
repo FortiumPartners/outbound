@@ -23,6 +23,9 @@ const envSchema = z.object({
   // Frontend URL (for redirects after auth)
   FRONTEND_URL: z.string().default('http://localhost:3006'),
 
+  // Scout API key (server-to-server auth for scouts)
+  SCOUT_API_KEY: z.string().min(32).optional(),
+
   // Test auth
   ENABLE_TEST_AUTH: z.string().transform(v => v === 'true').default('false'),
   TEST_AUTH_KEY: z.string().min(32).optional(),

@@ -32,6 +32,8 @@ services:
         generateValue: true  # Render generates a secure random value
       - key: OIDC_ISSUER
         value: https://identity-api-kj1r.onrender.com/oidc
+      - key: SCOUT_API_KEY
+        sync: false
 
   # Frontend static site
   - type: web
@@ -77,6 +79,8 @@ services:
         value: "50"
       - key: RATE_LIMIT_MS
         value: "2000"
+      - key: OUTBOUND_API_KEY
+        sync: false
 
   # StateScoop Scout - monitors gov tech executive moves via RSS
   - type: cron
@@ -99,3 +103,5 @@ services:
         value: info
       - key: LOOKBACK_DAYS
         value: "7"
+      - key: OUTBOUND_API_KEY
+        sync: false

@@ -84,6 +84,13 @@ function extractToken(request: FastifyRequest): string | null {
 }
 
 /**
+ * Check if the token is a valid scout API key
+ */
+function isValidScoutApiKey(token: string): boolean {
+  return !!config.SCOUT_API_KEY && token === config.SCOUT_API_KEY;
+}
+
+/**
  * Authentication decorator function (required auth)
  */
 async function authenticate(
@@ -98,6 +105,16 @@ async function authenticate(
       message: 'Authentication required',
       statusCode: 401,
     });
+  }
+
+  // Check scout API key first (server-to-server)
+  if (isValidScoutApiKey(token)) {
+    request.user = {
+      fortiumUserId: 'scout-service',
+      email: 'scout@fortiumpartners.com',
+      name: 'Scout Service',
+    };
+    return;
   }
 
   const user = await verifySessionToken(token);
