@@ -24,6 +24,8 @@ export const signalTypeEnum = z.enum([
   'leadership_change',
   'acquisition',
   'expansion',
+  'executive_move',
+  'scout_status',
   'other',
 ]);
 

@@ -77,3 +77,25 @@ services:
         value: "50"
       - key: RATE_LIMIT_MS
         value: "2000"
+
+  # StateScoop Scout - monitors gov tech executive moves via RSS
+  - type: cron
+    name: statescoop-scout
+    runtime: docker
+    dockerfilePath: ./scouts/statescoop-scout/Dockerfile
+    dockerContext: ./scouts/statescoop-scout
+    repo: https://github.com/FortiumPartners/outbound
+    branch: main
+    schedule: "0 */6 * * *"  # Every 6 hours
+    plan: starter
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: OUTBOUND_API_URL
+        value: https://outbound-ikby.onrender.com
+      - key: DRY_RUN
+        value: "false"
+      - key: LOG_LEVEL
+        value: info
+      - key: LOOKBACK_DAYS
+        value: "7"
