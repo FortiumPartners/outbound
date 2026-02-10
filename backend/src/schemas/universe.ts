@@ -27,6 +27,8 @@ export const accountResponseSchema = z.object({
 });
 
 // Contact schemas
+export const consentStatusEnum = z.enum(['unknown', 'opted_in', 'opted_out', 'do_not_contact']);
+
 export const createContactSchema = z.object({
   accountId: z.string().uuid().optional(),
   firstName: z.string().optional(),
@@ -35,6 +37,10 @@ export const createContactSchema = z.object({
   linkedinUrl: z.string().url().optional(),
   title: z.string().optional(),
   dedupeKey: z.string().optional(),
+  consentStatus: consentStatusEnum.optional(),
+  consentSource: z.string().optional(),
+  consentDate: z.string().datetime().optional(),
+  suppressionReason: z.string().optional(),
 });
 
 export const updateContactSchema = createContactSchema.partial();
@@ -48,6 +54,12 @@ export const contactResponseSchema = z.object({
   linkedinUrl: z.string().nullable(),
   title: z.string().nullable(),
   dedupeKey: z.string().nullable(),
+  consentStatus: z.string(),
+  consentSource: z.string().nullable(),
+  consentDate: z.string().datetime().nullable(),
+  suppressionReason: z.string().nullable(),
+  lastContactedAt: z.string().datetime().nullable(),
+  contactCount: z.number(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
 });

@@ -55,6 +55,14 @@ model Contact {
   // Dedupe and identity resolution
   dedupeKey     String?  @unique @map("dedupe_key")
 
+  // Compliance
+  consentStatus     String    @default("unknown") @map("consent_status") // unknown, opted_in, opted_out, do_not_contact
+  consentSource     String?   @map("consent_source") // how consent was obtained
+  consentDate       DateTime? @map("consent_date")
+  suppressionReason String?   @map("suppression_reason")
+  lastContactedAt   DateTime? @map("last_contacted_at")
+  contactCount      Int       @default(0) @map("contact_count")
+
   // Metadata
   createdAt     DateTime @default(now()) @map("created_at")
   updatedAt     DateTime @updatedAt @map("updated_at")
@@ -65,6 +73,7 @@ model Contact {
   hypotheses    Hypothesis[]
   segments      ContactSegment[]
 
+  @@index([consentStatus])
   @@map("contacts")
 }
 

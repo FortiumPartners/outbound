@@ -22,7 +22,7 @@ services:
       - key: LOG_LEVEL
         value: info
       - key: DATABASE_URL
-        sync: false  # Set to Supabase pooler URL
+        sync: false  # Set to Render Postgres internal URL
       - key: HUBSPOT_ACCESS_TOKEN
         sync: false
       # Auth configuration
