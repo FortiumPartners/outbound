@@ -45,3 +45,4 @@ prisma/migrations/*.sql.pending
 # Misc
 *.pem
 .cache/
+test-results/

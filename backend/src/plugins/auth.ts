@@ -1,80 +1,37 @@
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import fp from 'fastify-plugin';
-import * as jose from 'jose';
+import { verifySessionToken } from '@fortium/identity-client';
+import type { SessionPayload } from '@fortium/identity-client';
 import { config } from '../lib/config.js';
 
-// User payload attached to request after authentication
 export interface AuthUser {
   fortiumUserId: string;
   email: string;
   name: string;
 }
 
-// Extend FastifyRequest to include user
 declare module 'fastify' {
   interface FastifyRequest {
     user?: AuthUser;
   }
 }
 
-/**
- * Verify local session token (HS256)
- */
-async function verifySessionToken(token: string): Promise<AuthUser | null> {
-  try {
-    const secret = new TextEncoder().encode(config.JWT_SECRET);
-    const { payload } = await jose.jwtVerify(token, secret, {
-      issuer: 'outbound-api',
-    });
+const AUTH_TOKEN_COOKIE = 'auth_token';
 
-    if (!payload.sub || !payload.email) {
-      return null;
-    }
+export const sessionConfig = {
+  jwtSecret: config.JWT_SECRET,
+  issuer: 'outbound-api',
+};
 
-    return {
-      fortiumUserId: payload.sub,
-      email: payload.email as string,
-      name: (payload.name as string) || (payload.email as string),
-    };
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Create a session token for local use
- */
-export async function createSessionToken(user: AuthUser, expiresIn = '24h'): Promise<string> {
-  const secret = new TextEncoder().encode(config.JWT_SECRET);
-
-  const token = await new jose.SignJWT({
-    email: user.email,
-    name: user.name,
-  })
-    .setProtectedHeader({ alg: 'HS256' })
-    .setSubject(user.fortiumUserId)
-    .setIssuer('outbound-api')
-    .setIssuedAt()
-    .setExpirationTime(expiresIn)
-    .sign(secret);
-
-  return token;
-}
-
-/**
- * Extract token from request (Authorization header or cookie)
- */
 function extractToken(request: FastifyRequest): string | null {
-  // Check Authorization header first
   const authHeader = request.headers.authorization;
   if (authHeader?.startsWith('Bearer ')) {
     return authHeader.slice(7);
   }
 
-  // Check cookie
   const cookies = request.cookies as Record<string, string> | undefined;
-  if (cookies?.['outbound_session']) {
-    const result = request.unsignCookie(cookies['outbound_session']);
+  if (cookies?.[AUTH_TOKEN_COOKIE]) {
+    const result = request.unsignCookie(cookies[AUTH_TOKEN_COOKIE]);
     if (result.valid && result.value) {
       return result.value;
     }
@@ -83,16 +40,21 @@ function extractToken(request: FastifyRequest): string | null {
   return null;
 }
 
-/**
- * Check if the token is a valid scout API key
- */
 function isValidScoutApiKey(token: string): boolean {
   return !!config.SCOUT_API_KEY && token === config.SCOUT_API_KEY;
 }
 
-/**
- * Authentication decorator function (required auth)
- */
+async function resolveUser(token: string): Promise<AuthUser | null> {
+  const session = await verifySessionToken(token, sessionConfig);
+  if (!session) return null;
+
+  return {
+    fortiumUserId: session.fortiumUserId,
+    email: session.email,
+    name: ((session as { name?: string }).name) || session.email,
+  };
+}
+
 async function authenticate(
   request: FastifyRequest,
   reply: FastifyReply,
@@ -117,7 +79,7 @@ async function authenticate(
     return;
   }
 
-  const user = await verifySessionToken(token);
+  const user = await resolveUser(token);
 
   if (!user) {
     return reply.status(401).send({
@@ -130,28 +92,18 @@ async function authenticate(
   request.user = user;
 }
 
-/**
- * Optional authentication - parses token if present but doesn't require it
- */
-async function authenticateOptional(
+export async function authenticateOptional(
   request: FastifyRequest,
 ): Promise<void> {
   const token = extractToken(request);
+  if (!token) return;
 
-  if (!token) {
-    return;
-  }
-
-  const user = await verifySessionToken(token);
-
+  const user = await resolveUser(token);
   if (user) {
     request.user = user;
   }
 }
 
-/**
- * Auth plugin for Fastify
- */
 async function authPlugin(fastify: FastifyInstance): Promise<void> {
   fastify.decorate('authenticate', authenticate);
 }
@@ -161,4 +113,4 @@ export default fp(authPlugin, {
   fastify: '4.x',
 });
 
-export { authenticate, authenticateOptional };
+export { authenticate };
