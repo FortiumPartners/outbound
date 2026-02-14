@@ -3,7 +3,7 @@
  */
 
 // Production defaults
-const PROD_API_URL = 'https://fortiumoutbound.onrender.com';
+const PROD_API_URL = 'https://outbound-ikby.onrender.com';
 
 const isProd = window.location.hostname.includes('onrender.com');
 const API_URL = import.meta.env.VITE_API_URL || (isProd ? PROD_API_URL : 'http://localhost:8004');
