@@ -2,11 +2,9 @@
  * API client for Outbound backend
  */
 
-// Production defaults
-const PROD_API_URL = 'https://outbound-ikby.onrender.com';
-
+// In production, use relative URLs (Nginx proxies /auth and /api to backend)
 const isProd = window.location.hostname.includes('onrender.com');
-const API_URL = import.meta.env.VITE_API_URL || (isProd ? PROD_API_URL : 'http://localhost:8004');
+const API_URL = import.meta.env.VITE_API_URL || (isProd ? '' : 'http://localhost:8004');
 
 const API_BASE = `${API_URL}/api/v1`;
 const AUTH_BASE = `${API_URL}/auth`;
