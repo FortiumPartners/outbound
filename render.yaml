@@ -30,8 +30,8 @@ services:
         generateValue: true  # Render generates a secure random value
       - key: COOKIE_SECRET
         generateValue: true  # Render generates a secure random value
-      - key: OIDC_ISSUER
-        value: https://identity-api-kj1r.onrender.com/oidc
+      - key: IDENTITY_ISSUER
+        value: https://identity.fortiumsoftware.com/oidc
       - key: SCOUT_API_KEY
         sync: false
 
