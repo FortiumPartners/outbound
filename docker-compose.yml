@@ -30,6 +30,10 @@ services:
       - OIDC_CLIENT_ID=outbound-api
       - ENABLE_TEST_AUTH=true
       - TEST_AUTH_KEY=${TEST_AUTH_KEY}
+      # OpenTelemetry (disabled in dev by default — set in .env to enable)
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      - OTEL_EXPORTER_OTLP_HEADERS=${OTEL_EXPORTER_OTLP_HEADERS:-}
+      - OTEL_SERVICE_NAME=${OTEL_SERVICE_NAME:-outbound-api}
     volumes:
       - ./backend:/app:delegated
       - /app/node_modules

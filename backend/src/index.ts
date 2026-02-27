@@ -9,6 +9,7 @@ import {
   ZodTypeProvider,
 } from 'fastify-type-provider-zod';
 import { config } from './lib/config.js';
+import { logger } from './lib/logger.js';
 import authPlugin, { authenticate } from './plugins/auth.js';
 import { healthRoutes } from './routes/health.js';
 import { authRoutes } from './routes/auth.js';
@@ -18,13 +19,7 @@ import { signalRoutes } from './routes/signals.js';
 import { hypothesesRoutes } from './routes/hypotheses.js';
 
 const fastify = Fastify({
-  logger: {
-    level: config.LOG_LEVEL,
-    transport:
-      config.NODE_ENV === 'development'
-        ? { target: 'pino-pretty', options: { colorize: true } }
-        : undefined,
-  },
+  logger: logger as unknown as import('fastify').FastifyBaseLogger,
 }).withTypeProvider<ZodTypeProvider>();
 
 // Set up Zod validation
