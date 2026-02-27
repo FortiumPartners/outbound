@@ -34,6 +34,13 @@ services:
         value: https://identity.fortiumsoftware.com/oidc
       - key: SCOUT_API_KEY
         sync: false
+      # OpenTelemetry (Grafana Cloud)
+      - key: OTEL_EXPORTER_OTLP_ENDPOINT
+        sync: false
+      - key: OTEL_EXPORTER_OTLP_HEADERS
+        sync: false
+      - key: OTEL_SERVICE_NAME
+        value: outbound-api
 
   # Frontend static site
   - type: web
