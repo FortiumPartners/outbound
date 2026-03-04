@@ -11,28 +11,14 @@ on:
     types: [opened, synchronize]
 
 jobs:
-  auto-label:
-    if: github.event_name == 'issues' && github.event.action == 'opened'
-    runs-on: ubuntu-latest
-    permissions:
-      issues: write
-    steps:
-      - uses: actions/github-script@v7
-        with:
-          script: |
-            await github.rest.issues.addLabels({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              labels: ['claude']
-            });
-
   claude:
     # Trigger on:
-    # 1. Issue labeled with "claude" (auto-label adds this on open)
-    # 2. @claude mentioned in any comment
-    # 3. New PR opened (auto-review)
+    # 1. New issue opened (auto-triage and fix)
+    # 2. Issue manually labeled with "claude"
+    # 3. @claude mentioned in any comment
+    # 4. New PR opened or updated (auto-review)
     if: |
+      (github.event_name == 'issues' && github.event.action == 'opened') ||
       (github.event_name == 'issues' && github.event.action == 'labeled' && contains(github.event.issue.labels.*.name, 'claude')) ||
       (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
       (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
