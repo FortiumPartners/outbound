@@ -16,7 +16,8 @@ services:
       - PORT=8000
       - HOST=0.0.0.0
       - LOG_LEVEL=debug
-      - DATABASE_URL=postgresql://fortium_render_production_postgres_user:qUoIQ7rLsDBEDEu7kZwfKHyuIXIXyCXC@dpg-d5dcfmqli9vc73dfrfvg-a.oregon-postgres.render.com/outbound
+      # Set DATABASE_URL in .env (rotated 2026-04-25; old credential invalidated)
+      - DATABASE_URL=${DATABASE_URL}
       - HUBSPOT_ACCESS_TOKEN=${HUBSPOT_ACCESS_TOKEN}
       - HUBSPOT_PORTAL_ID=${HUBSPOT_PORTAL_ID:-48750181}
       # PartnerConnect API credentials
