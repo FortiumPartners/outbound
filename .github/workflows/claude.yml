@@ -1,5 +1,11 @@
 name: Claude Code
 
+# Thin caller of the org-wide gated, Sonnet-pinned shared workflow.
+# Agent runs ONLY on @claude (or `claude` label) by an org member;
+# a Sonnet security review runs on real (non-draft, non-bot) PRs.
+# SHA-pinned (not @main), passes ONLY ANTHROPIC_API_KEY (not inherit).
+# See FortiumPartners/.github #1 (gating) + #2 (hardening).
+
 on:
   issues:
     types: [opened, labeled]
@@ -8,52 +14,10 @@ on:
   pull_request_review_comment:
     types: [created]
   pull_request:
-    types: [opened, synchronize]
+    types: [opened, reopened, ready_for_review, synchronize]
 
 jobs:
   claude:
-    # Trigger on:
-    # 1. New issue opened (auto-triage and fix)
-    # 2. Issue manually labeled with "claude"
-    # 3. @claude mentioned in any comment
-    # 4. New PR opened or updated (auto-review)
-    if: |
-      (github.event_name == 'issues' && github.event.action == 'opened') ||
-      (github.event_name == 'issues' && github.event.action == 'labeled' && contains(github.event.issue.labels.*.name, 'claude')) ||
-      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
-      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
-      (github.event_name == 'pull_request')
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: write
-      issues: write
-      id-token: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Run Claude Code Action
-        uses: anthropics/claude-code-action@v1
-        with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          auto_fix: true
-          auto_merge: false
-
-  security-review:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: write
-      id-token: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Claude Code Security Review
-        uses: anthropics/claude-code-security-review@main
-        with:
-          claude-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+    uses: FortiumPartners/.github/.github/workflows/claude.yml@ea79cb1127e4012b83416c605a025976d40be8a5
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
