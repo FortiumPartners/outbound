@@ -7,9 +7,10 @@ WORKDIR /app
 
 # Install dependencies
 FROM base AS deps
-COPY package*.json ./
-# Use npm install (not npm ci) since we may not have package-lock.json
-RUN npm install
+COPY package.json package-lock.json ./
+# npm ci installs exactly what package-lock.json pins, so security bumps landed in
+# the lockfile are what ends up in the image.
+RUN npm ci
 
 # Build
 FROM base AS builder

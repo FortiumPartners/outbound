@@ -94,7 +94,9 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
     reply.setCookie(AUTH_TOKEN_COOKIE, token, {
       path: '/',
       httpOnly: true,
-      secure: config.NODE_ENV === 'production',
+      // This route returns 404 in production (see guard above), so the cookie
+      // is only ever issued over the dev/test HTTP listeners.
+      secure: false,
       signed: true,
       sameSite: 'lax',
       maxAge: 86400,
