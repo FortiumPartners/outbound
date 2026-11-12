@@ -18,6 +18,6 @@ on:
 
 jobs:
   claude:
-    uses: FortiumPartners/.github/.github/workflows/claude.yml@ea79cb1127e4012b83416c605a025976d40be8a5
+    uses: FortiumPartners/.github/.github/workflows/claude.yml@e36e191811c1138cdb284453ea0b9d81cb8f33a1
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
