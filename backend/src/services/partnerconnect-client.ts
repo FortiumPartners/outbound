@@ -6,7 +6,10 @@
  * - Engagements (partner work history)
  * - Resources (available partners with their experience)
  *
- * Uses M2M OAuth authentication via Auth0
+ * Uses M2M OAuth (client_credentials) authentication via Fortium Identity.
+ * PC_AUTH_URL, PC_AUDIENCE and PC_API_BASE have no defaults: the client
+ * refuses to construct without them, so a missing env var fails loudly
+ * instead of pointing at stale infrastructure.
  */
 
 import { PartnerConnectClient, PartnerConnectEngagement, PartnerConnectResource } from './types.js';
@@ -35,10 +38,6 @@ interface PCUserResponse {
   AvailabilityNext90?: number;
   Active?: boolean;
 }
-
-const PC_API_BASE = process.env.PC_API_BASE || 'https://prod-v3.fortiumpartners.io/v3/api';
-const PC_AUTH_URL = process.env.PC_AUTH_URL || 'https://prod-fs-fortiumpartners.us.auth0.com/oauth/token';
-const PC_AUDIENCE = process.env.PC_AUDIENCE || 'https://prod-v3.fortiumpartners.io';
 
 /**
  * Mapping of job title patterns to normalized role codes
@@ -145,15 +144,24 @@ interface TokenResponse {
 export class PartnerConnectClientService {
   private clientId: string;
   private clientSecret: string;
+  private authUrl: string;
+  private audience: string;
+  private apiBase: string;
   private accessToken: string | null = null;
   private tokenExpiry: Date | null = null;
 
   constructor(clientId?: string, clientSecret?: string) {
     this.clientId = clientId || process.env.PC_CLIENT_ID || '';
     this.clientSecret = clientSecret || process.env.PC_CLIENT_SECRET || '';
+    this.authUrl = process.env.PC_AUTH_URL || '';
+    this.audience = process.env.PC_AUDIENCE || '';
+    this.apiBase = process.env.PC_API_BASE || '';
 
     if (!this.clientId || !this.clientSecret) {
       throw new Error('PC_CLIENT_ID and PC_CLIENT_SECRET are required');
+    }
+    if (!this.authUrl || !this.audience || !this.apiBase) {
+      throw new Error('PC_AUTH_URL, PC_AUDIENCE and PC_API_BASE are required');
     }
   }
 
@@ -167,17 +175,18 @@ export class PartnerConnectClientService {
     }
 
     // Fetch new token
-    const response = await fetch(PC_AUTH_URL, {
+    // Fortium Identity rejects JSON bodies: the token request must be form-encoded.
+    const response = await fetch(this.authUrl, {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json',
+        'Content-Type': 'application/x-www-form-urlencoded',
       },
-      body: JSON.stringify({
+      body: new URLSearchParams({
+        grant_type: 'client_credentials',
         client_id: this.clientId,
         client_secret: this.clientSecret,
-        audience: PC_AUDIENCE,
-        grant_type: 'client_credentials',
-      }),
+        resource: this.audience,
+      }).toString(),
     });
 
     if (!response.ok) {
@@ -197,7 +206,7 @@ export class PartnerConnectClientService {
 
   private async request<T>(endpoint: string): Promise<T> {
     const token = await this.getToken();
-    const url = `${PC_API_BASE}${endpoint}`;
+    const url = `${this.apiBase}${endpoint}`;
 
     const response = await fetch(url, {
       headers: {
