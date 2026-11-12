@@ -12,6 +12,7 @@ import {
 } from '../schemas/signals.js';
 import { pushSignalToHubSpot } from '../services/hubspot-push.js';
 import { enrichSignal } from '../services/enrichment-worker.js';
+import { buildSignalDigest } from '../services/signal-digest.js';
 import { z } from 'zod';
 
 export const signalRoutes: FastifyPluginAsync = async (fastify) => {
@@ -89,6 +90,19 @@ export const signalRoutes: FastifyPluginAsync = async (fastify) => {
       })),
       pagination: { page, limit, total },
     };
+  });
+
+  // Digest of new Lead5 signals (same auth as the other signal routes)
+  fastify.get('/digest', {
+    schema: {
+      querystring: z.object({
+        since: z.string().datetime({ offset: true }).optional(),
+      }),
+    },
+  }, async (request) => {
+    const { since } = request.query as { since?: string };
+    const sinceDate = since ? new Date(since) : new Date(Date.now() - 24 * 60 * 60 * 1000);
+    return buildSignalDigest(prisma, sinceDate);
   });
 
   // Get signal by ID

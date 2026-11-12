@@ -34,6 +34,17 @@ services:
         value: https://identity.fortiumsoftware.com/oidc
       - key: SCOUT_API_KEY
         sync: false
+      # PartnerConnect via Fortium Identity (client_credentials). No defaults in code.
+      - key: PC_CLIENT_ID
+        sync: false
+      - key: PC_CLIENT_SECRET
+        sync: false
+      - key: PC_AUTH_URL
+        value: https://identity.fortiumsoftware.com/oidc/token
+      - key: PC_AUDIENCE
+        value: https://prod.fortiumsoftware.com
+      - key: PC_API_BASE
+        value: https://prod.fortiumsoftware.com/v3/api
 
   # Frontend static site
   - type: web
@@ -80,6 +91,23 @@ services:
       - key: RATE_LIMIT_MS
         value: "2000"
       - key: OUTBOUND_API_KEY
+        sync: false
+
+  # Daily digest of new Lead5 signals - 8am ET (13:00 UTC), after the 11:00 scout run
+  - type: cron
+    name: outbound-digest
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    dockerCommand: node dist/scripts/send-digest.js
+    repo: https://github.com/FortiumPartners/outbound
+    branch: main
+    schedule: "0 13 * * *"
+    plan: starter
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: SLACK_WEBHOOK_URL
         sync: false
 
   # StateScoop Scout - monitors gov tech executive moves via RSS
