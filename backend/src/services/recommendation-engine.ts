@@ -38,14 +38,17 @@ interface IndustryDeal extends SimilarDeal {
 export class RecommendationEngine {
   private hubspot = getHubSpotClient();
   private partnerConnect: ReturnType<typeof getPartnerConnectClient> | null = null;
+  private partnerConnectInitError: string | null = null;
   private anthropic: Anthropic | null = null;
 
   constructor() {
-    // PartnerConnect requires credentials - init lazily
+    // PartnerConnect requires credentials. A missing client does not block the
+    // signal, but the reason is recorded on every recommendation (sourceErrors).
     try {
       this.partnerConnect = getPartnerConnectClient();
     } catch (e) {
-      console.warn('PartnerConnect not configured, skipping partner matching');
+      this.partnerConnectInitError = e instanceof Error ? e.message : String(e);
+      console.warn(`PartnerConnect not configured, skipping partner matching: ${this.partnerConnectInitError}`);
     }
 
     // Anthropic for conversation openers
@@ -71,7 +74,8 @@ export class RecommendationEngine {
     context.engagementType = engagementType;
 
     // Step 3: Discover connections
-    const connections = await this.discoverConnections(context);
+    const sourceErrors: string[] = [];
+    const connections = await this.discoverConnections(context, sourceErrors);
 
     // Step 4: Get similar deals for framing (HubSpot data, not partner matching)
     const similarDeals = await this.getSimilarDeals(context);
@@ -110,6 +114,7 @@ export class RecommendationEngine {
       summary,
       generatedAt: new Date(),
       generationMethod: 'strategic_analysis',
+      sourceErrors,
     };
   }
 
@@ -253,7 +258,7 @@ export class RecommendationEngine {
   /**
    * Discover all connections for an opportunity
    */
-  private async discoverConnections(context: OpportunityContext): Promise<Connection[]> {
+  private async discoverConnections(context: OpportunityContext, sourceErrors: string[]): Promise<Connection[]> {
     const connections: Connection[] = [];
 
     // 1. Check PE relationships
@@ -270,8 +275,10 @@ export class RecommendationEngine {
 
     // 3. Check PartnerConnect for partner experience (if available)
     if (this.partnerConnect) {
-      const partnerConnections = await this.checkPartnerExperience(context);
+      const partnerConnections = await this.checkPartnerExperience(context, sourceErrors);
       connections.push(...partnerConnections);
+    } else {
+      sourceErrors.push(`partnerconnect: unavailable (${this.partnerConnectInitError ?? 'client not initialized'})`);
     }
 
     // 4. Check for similar deals (same practice area)
@@ -398,7 +405,7 @@ export class RecommendationEngine {
   /**
    * Check PartnerConnect for partner experience at company or similar
    */
-  private async checkPartnerExperience(context: OpportunityContext): Promise<Connection[]> {
+  private async checkPartnerExperience(context: OpportunityContext, sourceErrors: string[]): Promise<Connection[]> {
     const connections: Connection[] = [];
 
     if (!this.partnerConnect) return connections;
@@ -452,6 +459,7 @@ export class RecommendationEngine {
       // NOTE: Metro/location match removed - Fortium prioritizes ability/experience, not location
     } catch (e) {
       console.warn('Failed to check PartnerConnect:', e);
+      sourceErrors.push(`partnerconnect: call failed (${e instanceof Error ? e.message : String(e)})`);
     }
 
     return connections;

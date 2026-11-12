@@ -168,6 +168,9 @@ export interface StrategicRecommendation {
   // Metadata
   generatedAt: Date;
   generationMethod: 'strategic_analysis';
+  // Data sources that were unavailable or failed while generating this
+  // recommendation (e.g. PartnerConnect). Empty means every source answered.
+  sourceErrors?: string[];
   hubspotDealId?: string;
   hubspotNoteId?: string;
 }

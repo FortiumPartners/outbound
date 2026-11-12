@@ -52,7 +52,9 @@ export async function enrichSignal(signalId: string): Promise<void> {
 
     console.log(`[enrichment-worker] Signal ${signalId} enriched successfully`);
   } catch (error) {
-    console.error(`[enrichment-worker] Enrichment failed for signal ${signalId}:`, error);
-    // Leave as pending - can retry later
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[enrichment-worker] ENRICHMENT FAILED signalId=${signalId} status=left_pending error=${message}`);
+    if (error instanceof Error && error.stack) console.error(error.stack);
+    // Leave as pending - the daily digest counts these so a failed day is visible
   }
 }
