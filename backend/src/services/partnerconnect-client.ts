@@ -28,7 +28,6 @@ interface PCUserResponse {
   DisplayName: string;
   FirstName: string;
   LastName: string;
-  PrimaryEmail: string;
   LeadershipRoleCode?: string;
   City?: string;
   State?: string;
@@ -141,6 +140,17 @@ interface TokenResponse {
   expires_in: number;
 }
 
+/**
+ * Failure with a short, safe category (stored on the signal and returned by the
+ * API) and a full detail message (server log only).
+ */
+export class PartnerConnectError extends Error {
+  constructor(public readonly category: string, public readonly detail: string) {
+    super(`${category}: ${detail}`);
+    this.name = 'PartnerConnectError';
+  }
+}
+
 export class PartnerConnectClientService {
   private clientId: string;
   private clientSecret: string;
@@ -175,23 +185,29 @@ export class PartnerConnectClientService {
     }
 
     // Fetch new token
-    // Fortium Identity rejects JSON bodies: the token request must be form-encoded.
-    const response = await fetch(this.authUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      body: new URLSearchParams({
-        grant_type: 'client_credentials',
-        client_id: this.clientId,
-        client_secret: this.clientSecret,
-        resource: this.audience,
-      }).toString(),
-    });
+    // Fortium Identity uses client_secret_basic and rejects JSON bodies: credentials go
+    // in the Authorization header, the body is form-encoded grant_type + resource only.
+    const basic = Buffer.from(`${this.clientId}:${this.clientSecret}`).toString('base64');
+    let response: Response;
+    try {
+      response = await fetch(this.authUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Authorization': `Basic ${basic}`,
+        },
+        body: new URLSearchParams({
+          grant_type: 'client_credentials',
+          resource: this.audience,
+        }).toString(),
+      });
+    } catch (e) {
+      throw new PartnerConnectError('partnerconnect: network_error', e instanceof Error ? e.message : String(e));
+    }
 
     if (!response.ok) {
       const error = await response.text();
-      throw new Error(`PartnerConnect auth error ${response.status}: ${error}`);
+      throw new PartnerConnectError(`partnerconnect: auth_failed (${response.status})`, `auth error ${response.status}: ${error}`);
     }
 
     const data: TokenResponse = await response.json();
@@ -208,16 +224,24 @@ export class PartnerConnectClientService {
     const token = await this.getToken();
     const url = `${this.apiBase}${endpoint}`;
 
-    const response = await fetch(url, {
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-    });
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+    } catch (e) {
+      throw new PartnerConnectError('partnerconnect: network_error', e instanceof Error ? e.message : String(e));
+    }
 
     if (!response.ok) {
       const error = await response.text();
-      throw new Error(`PartnerConnect API error ${response.status}: ${error}`);
+      const category = response.status === 401 || response.status === 403
+        ? `partnerconnect: auth_failed (${response.status})`
+        : `partnerconnect: api_error (${response.status})`;
+      throw new PartnerConnectError(category, `API error ${response.status}: ${error}`);
     }
 
     return response.json();
@@ -398,7 +422,6 @@ export class PartnerConnectClientService {
       displayName: user.DisplayName,
       firstName: user.FirstName,
       lastName: user.LastName,
-      primaryEmail: user.PrimaryEmail,
       leadershipRoleCode: user.LeadershipRoleCode,
       city: user.City,
       state: user.State,

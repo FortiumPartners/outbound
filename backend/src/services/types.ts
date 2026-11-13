@@ -253,7 +253,6 @@ export interface PartnerConnectResource {
   displayName: string;
   firstName: string;
   lastName: string;
-  primaryEmail: string;
   leadershipRoleCode?: string;
   city?: string;
   state?: string;
