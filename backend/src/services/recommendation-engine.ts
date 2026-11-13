@@ -12,7 +12,7 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import { getHubSpotClient } from './hubspot-client.js';
-import { getPartnerConnectClient, normalizeRoleCode } from './partnerconnect-client.js';
+import { getPartnerConnectClient, normalizeRoleCode, PartnerConnectError } from './partnerconnect-client.js';
 import {
   OpportunityContext,
   Connection,
@@ -278,7 +278,8 @@ export class RecommendationEngine {
       const partnerConnections = await this.checkPartnerExperience(context, sourceErrors);
       connections.push(...partnerConnections);
     } else {
-      sourceErrors.push(`partnerconnect: unavailable (${this.partnerConnectInitError ?? 'client not initialized'})`);
+      // Category only: the reason (partnerConnectInitError) is in the server log.
+      sourceErrors.push('partnerconnect: unavailable');
     }
 
     // 4. Check for similar deals (same practice area)
@@ -459,7 +460,8 @@ export class RecommendationEngine {
       // NOTE: Metro/location match removed - Fortium prioritizes ability/experience, not location
     } catch (e) {
       console.warn('Failed to check PartnerConnect:', e);
-      sourceErrors.push(`partnerconnect: call failed (${e instanceof Error ? e.message : String(e)})`);
+      // Category only; the full message was logged above.
+      sourceErrors.push(e instanceof PartnerConnectError ? e.category : 'partnerconnect: error');
     }
 
     return connections;

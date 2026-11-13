@@ -88,6 +88,22 @@ export async function buildSignalDigest(prisma: PrismaClient, since: Date): Prom
   };
 }
 
+/** Slack requires & < > escaped in message text; they otherwise start mentions and links. */
+export function escapeSlack(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/** Returns the URL only if it is plain http(s) and cannot break out of a <url|label> link. */
+export function safeLinkUrl(raw: string | null): string | null {
+  if (!raw || raw.includes('|') || raw.includes('>') || raw.includes('<')) return null;
+  try {
+    const u = new URL(raw);
+    return u.protocol === 'http:' || u.protocol === 'https:' ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Slack mrkdwn text. Failures lead the message so a bad day cannot read as success. */
 export function formatDigestMessage(d: SignalDigest): string {
   const lines: string[] = [];
@@ -119,14 +135,16 @@ export function formatDigestMessage(d: SignalDigest): string {
     lines.push(`*Top ${d.top.length} by recommendation score*`);
     d.top.forEach((s, i) => {
       const score = s.score === null ? 'no score' : `score ${s.score}`;
-      const where = s.metro ? ` (${s.metro})` : '';
+      const where = s.metro ? ` (${escapeSlack(s.metro)})` : '';
       const flags = [
         s.status === 'pending' ? ':warning: not enriched' : '',
         s.sourceErrors.length > 0 ? ':warning: PartnerConnect missing' : '',
       ].filter(Boolean).join(' ');
-      const name = s.sourceUrl ? `<${s.sourceUrl}|${s.company}>` : s.company;
-      lines.push(`${i + 1}. ${name}: ${s.jobTitle}${where} - ${score}${flags ? ` ${flags}` : ''}`);
-      if (s.summary) lines.push(`    ${s.summary.split('\n')[0].slice(0, 200)}`);
+      const company = escapeSlack(s.company);
+      const url = safeLinkUrl(s.sourceUrl);
+      const name = url ? `<${escapeSlack(url)}|${company}>` : company;
+      lines.push(`${i + 1}. ${name}: ${escapeSlack(s.jobTitle)}${where} - ${score}${flags ? ` ${flags}` : ''}`);
+      if (s.summary) lines.push(`    ${escapeSlack(s.summary.split('\n')[0].slice(0, 200))}`);
     });
   }
 
